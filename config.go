@@ -14,7 +14,7 @@ import (
 
 // Tools are resolved on the host before entering any namespace.
 type Tools struct {
-	Bubblewrap, Unshare, IP string
+	Bubblewrap, IP string
 }
 
 type Config struct {
@@ -124,9 +124,9 @@ func discoverConfig() (Config, error) {
 func discoverTools() (Tools, error) {
 	t := Tools{
 		Bubblewrap: "/usr/bin/bwrap",
-		Unshare:    "/usr/bin/unshare", IP: "/usr/bin/ip",
+		IP:         "/usr/bin/ip",
 	}
-	for _, path := range []string{t.Bubblewrap, t.Unshare, t.IP} {
+	for _, path := range []string{t.Bubblewrap, t.IP} {
 		info, err := os.Stat(path)
 		if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
 			return Tools{}, fmt.Errorf("missing executable %s; see help", path)

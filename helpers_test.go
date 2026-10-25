@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/spf13/cobra"
@@ -23,7 +24,14 @@ func TestMain(m *testing.M) {
 			if child.Name() == string(ModeSetup) {
 				child.RunE = func(cmd *cobra.Command, args []string) error {
 					setup := namespaceSetup{SandboxArguments: args}
-					return setup.run(fakeNamespaceTAP)
+					createTAP := fakeNamespaceTAP
+					switch filepath.Base(args[0]) {
+					case "fail-tap":
+						createTAP = func() (*os.File, error) { return nil, errors.New("simulated TAP creation failure") }
+					case "fail-network":
+						createTAP = func() (*os.File, error) { return os.OpenFile(os.DevNull, os.O_RDWR, 0) }
+					}
+					return setup.run(createTAP)
 				}
 			}
 		}
@@ -74,12 +82,6 @@ func TestSandboxStartupPermission(t *testing.T) {
 // Keep its peer inherited across setup's exec so it lives until the workload
 // exits. The supervisor still runs the actual gVisor networking library.
 func fakeNamespaceTAP() (*os.File, error) {
-	if os.Getenv("POMPON_TEST_FAIL_TAP") == "1" {
-		return nil, errors.New("simulated TAP creation failure")
-	}
-	if os.Getenv("POMPON_TEST_FAIL_NETWORK") == "1" {
-		return os.OpenFile(os.DevNull, os.O_RDWR, 0)
-	}
 	pair, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_DGRAM|unix.SOCK_NONBLOCK, 0)
 	if err != nil {
 		return nil, err

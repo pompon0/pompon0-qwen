@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -9,7 +10,6 @@ import (
 	"os"
 	"os/exec"
 	"slices"
-	"strings"
 	"testing"
 	"time"
 
@@ -308,10 +308,11 @@ func TestRootlessNamespaceTAP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.CommandContext(t.Context(), "/usr/bin/unshare", "--user", "--map-root-user", "--net", "--", executable, "-test.run=^TestRootlessNamespaceTAP$")
+	cmd := exec.CommandContext(t.Context(), executable, "-test.run=^TestRootlessNamespaceTAP$")
+	cmd.SysProcAttr = networkNamespaceAttributes()
 	cmd.Env = append(os.Environ(), "POMPON_TEST_TAP_NAMESPACE=1")
 	output, err := cmd.CombinedOutput()
-	if err != nil && strings.Contains(string(output), "unshare failed: Operation not permitted") {
+	if errors.Is(err, unix.EPERM) || errors.Is(err, unix.EACCES) {
 		t.Skip("user/network namespaces unavailable")
 	}
 	if err != nil {

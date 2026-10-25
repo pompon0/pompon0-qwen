@@ -111,6 +111,18 @@ func awaitReady(ctx context.Context, ready *os.File, process *managedProcess, de
 	})
 }
 
+// The child enters fresh user/network namespaces before the Go helper starts.
+// Map the invoking user to namespace root, without host root privileges. Denying
+// setgroups is required for an unprivileged process to install its GID mapping.
+func networkNamespaceAttributes() *syscall.SysProcAttr {
+	return &syscall.SysProcAttr{
+		Cloneflags:                 unix.CLONE_NEWUSER | unix.CLONE_NEWNET,
+		UidMappings:                []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Geteuid(), Size: 1}},
+		GidMappings:                []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getegid(), Size: 1}},
+		GidMappingsEnableSetgroups: false,
+	}
+}
+
 // The setup helper waits until the TAP interface and filtered network stack are
 // ready before execing Bubblewrap. Qwen never runs during the privileged setup phase.
 func supervise(ctx context.Context, tools Tools, plan SandboxPlan, policy NetworkPolicy) error {
@@ -155,14 +167,12 @@ func superviseInScope(ctx context.Context, s scope.Scope, tools Tools, plan Sand
 	if err != nil {
 		return fmt.Errorf("locate setup helper: %w", err)
 	}
-	args := []string{
-		"--user", "--map-root-user", "--net", "--",
-		launcher, string(ModeSetup), tools.Bubblewrap,
-	}
+	args := []string{string(ModeSetup), tools.Bubblewrap}
 	args = append(args, plan.BubblewrapArguments...)
 	args = append(args, "--")
 	args = append(args, plan.Workload...)
-	cmd := exec.Command(tools.Unshare, args...)
+	cmd := exec.Command(launcher, args...)
+	cmd.SysProcAttr = networkNamespaceAttributes()
 	cmd.Env = helperEnvironment
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	// ExtraFiles maps readiness, startup permission, and TAP handoff to 3, 4, 5.

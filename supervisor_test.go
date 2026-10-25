@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -16,8 +17,8 @@ import (
 	"github.com/pompon0/pompon0-qwen/utils/scope"
 )
 
-// Fake host tools exercise the real pipe/exec handshake without namespaces,
-// network privileges, Qwen, or access to any host project.
+// A fake Bubblewrap exercises the real namespace launch and pipe/exec handshake.
+// The helper supplies a synthetic TAP, so tests need no TUN device or Qwen.
 func fakeTools(t *testing.T) (Tools, string) {
 	t.Helper()
 	dir := t.TempDir()
@@ -30,7 +31,6 @@ func fakeTools(t *testing.T) (Tools, string) {
 		return path
 	}
 	var tools Tools
-	tools.Unshare = write("unshare", `while [[ $1 != -- ]]; do shift; done; shift; exec "$@"`)
 	tools.Bubblewrap = write("bwrap", `while [[ $1 != -- ]]; do shift; done; shift; exec "$@"`)
 	return tools, dir
 }
@@ -82,9 +82,7 @@ func TestProcessWaitNormalizesExitStatus(t *testing.T) {
 
 func TestSupervisorTAPFailureDoesNotLaunchWorkload(t *testing.T) {
 	tools, dir := fakeTools(t)
-	if err := os.WriteFile(tools.Unshare, []byte("#!/bin/bash\nset -eu\nexport POMPON_TEST_FAIL_TAP=1\nwhile [[ $1 != -- ]]; do shift; done; shift; exec \"$@\"\n"), 0o700); err != nil {
-		t.Fatal(err)
-	}
+	tools.Bubblewrap = filepath.Join(dir, "fail-tap")
 	marker := filepath.Join(dir, "workload-started")
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
@@ -98,12 +96,14 @@ func TestSupervisorTAPFailureDoesNotLaunchWorkload(t *testing.T) {
 }
 
 func TestSupervisorNetworkFailureStopsWorkload(t *testing.T) {
-	tools, _ := fakeTools(t)
+	tools, dir := fakeTools(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
-	if err := os.WriteFile(tools.Unshare, []byte("#!/bin/bash\nset -eu\nexport POMPON_TEST_FAIL_NETWORK=1\nwhile [[ $1 != -- ]]; do shift; done; shift; exec \"$@\"\n"), 0o700); err != nil {
+	failingBubblewrap := filepath.Join(dir, "fail-network")
+	if err := os.Rename(tools.Bubblewrap, failingBubblewrap); err != nil {
 		t.Fatal(err)
 	}
+	tools.Bubblewrap = failingBubblewrap
 	err := supervise(ctx, tools, SandboxPlan{Workload: []string{"/bin/sleep", "30"}}, NetworkPolicy{})
 	if err == nil || !strings.Contains(err.Error(), "embedded network") {
 		t.Fatalf("unexpected error: %v", err)
@@ -171,5 +171,52 @@ func TestAwaitReadyTimeoutAndCancellation(t *testing.T) {
 		if err == nil {
 			t.Fatal("helper became ready without a readiness byte")
 		}
+	}
+}
+
+func TestNetworkNamespaceLaunch(t *testing.T) {
+	if parent := os.Getenv("POMPON_TEST_PARENT_NETNS"); parent != "" {
+		if os.Geteuid() != 0 || os.Getegid() != 0 {
+			t.Fatalf("helper identity is %d:%d, want namespace root", os.Geteuid(), os.Getegid())
+		}
+		current, err := os.Readlink("/proc/self/ns/net")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if current == parent {
+			t.Fatal("helper remained in parent's network namespace")
+		}
+		for file, hostID := range map[string]string{"uid_map": os.Getenv("POMPON_TEST_PARENT_UID"), "gid_map": os.Getenv("POMPON_TEST_PARENT_GID")} {
+			contents, err := os.ReadFile(filepath.Join("/proc/self", file))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := strings.Fields(string(contents)); !slices.Equal(got, []string{"0", hostID, "1"}) {
+				t.Fatalf("unexpected %s: %q", file, contents)
+			}
+		}
+		setgroups, err := os.ReadFile("/proc/self/setgroups")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.TrimSpace(string(setgroups)) != "deny" {
+			t.Fatalf("unexpected setgroups policy: %q", setgroups)
+		}
+		return
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent, err := os.Readlink("/proc/self/ns/net")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.CommandContext(t.Context(), executable, "-test.run=^TestNetworkNamespaceLaunch$")
+	cmd.SysProcAttr = networkNamespaceAttributes()
+	cmd.Env = append(os.Environ(), "POMPON_TEST_PARENT_NETNS="+parent, "POMPON_TEST_PARENT_UID="+strconv.Itoa(os.Geteuid()), "POMPON_TEST_PARENT_GID="+strconv.Itoa(os.Getegid()))
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("native namespace launch: %v\n%s", err, output)
 	}
 }

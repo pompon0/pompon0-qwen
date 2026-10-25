@@ -34,7 +34,7 @@ func newCommand(arguments []string, sandboxRunner func(context.Context, Args) er
 		Short: "Run Qwen Code in a rootless Linux sandbox",
 		Long: "Run Qwen Code in a rootless Linux sandbox from a Git repository.\n\n" +
 			"Qwen is the default command. Requires bubblewrap,\n" +
-			"iproute2, and util-linux. Qwen must be installed in the active Node prefix.\n\n" +
+			"and iproute2. Qwen must be installed in the active Node prefix.\n\n" +
 			"Configuration and packaging: https://github.com/pompon0/pompon0-qwen#readme",
 		Args:              cobra.NoArgs,
 		RunE:              func(cmd *cobra.Command, args []string) error { return cmd.Help() },

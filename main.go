@@ -33,7 +33,7 @@ func main() {
 		// Handle SIGTERM so cancellation can stop and reap children, join scoped
 		// tasks, and remove temporary files before exiting. Linux does not normally
 		// kill children when a parent exits: Bubblewrap's --die-with-parent only
-		// applies after setup execs it, leaving the unshare/setup phase unprotected.
+		// applies after setup execs it, leaving the namespace setup phase unprotected.
 		signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
 		s.SpawnBg(func() error {
 			sig, err := utils.Recv(ctx, signals)

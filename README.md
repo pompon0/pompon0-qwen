@@ -145,7 +145,9 @@ separate so each can be changed without redesigning the rest of the launcher.
 
 ## Isolation boundary
 
-Trusted setup creates a TAP interface inside a private user/network namespace.
+Go starts the trusted setup helper directly in private user/network namespaces,
+mapping the invoking user to namespace root. No external `unshare` command is
+needed. The helper creates the TAP interface there.
 The supervisor owns the gVisor network stack, installs destination filters, and
 connects it to TAP before allowing Bubblewrap to start Qwen. Filtering uses
 public components from `gvisor-tap-vsock`; no fork, network subprocess, nft command,
