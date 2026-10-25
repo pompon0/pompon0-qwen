@@ -73,7 +73,7 @@ func TestPodmanIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	plan.Workload = []string{sandboxCheckerPath, "-test.run=^TestPodmanProbe$", "-test.v"}
-	policy := newNetworkPolicy(HostNetwork{Addresses: []netip.Addr{hostIP}}, nil, utils.Some(ModelServer{Address: modelAddress.Addr(), Port: modelAddress.Port()}))
+	policy := newNetworkPolicy(HostNetwork{Addresses: []netip.Addr{hostIP}}, nil, utils.Some(modelAddress))
 	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 	if err := supervise(ctx, config.Tools, plan, policy); err != nil {

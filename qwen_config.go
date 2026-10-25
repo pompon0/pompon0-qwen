@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -44,36 +45,36 @@ type modelOverrides struct {
 // Read the documented per-repository user configuration, never the host's
 // ordinary ~/.qwen or project-supplied settings. No Qwen/project code executes
 // while the supervisor still has authority over the firewall.
-func configuredModelServer(home string, environment map[string]string, invocation Args) (utils.Option[ModelServer], error) {
+func configuredModelServer(home string, environment map[string]string, invocation Args) (utils.Option[netip.AddrPort], error) {
 	path := filepath.Join(home, ".qwen/settings.json")
 	var settings qwenSettings
 	// Qwen can write its own home. Do not let a symlink there make the trusted
 	// supervisor read host files that are unavailable inside the sandbox.
 	root, err := os.OpenRoot(home)
 	if err != nil {
-		return utils.None[ModelServer](), fmt.Errorf("open Qwen home: %w", err)
+		return utils.None[netip.AddrPort](), fmt.Errorf("open Qwen home: %w", err)
 	}
 	defer root.Close()
 	data, err := root.ReadFile(".qwen/settings.json")
 	if err != nil && !os.IsNotExist(err) {
-		return utils.None[ModelServer](), fmt.Errorf("read Qwen user settings: %w", err)
+		return utils.None[netip.AddrPort](), fmt.Errorf("read Qwen user settings: %w", err)
 	}
 	if err == nil {
 		data, err = stripJSONComments(data)
 		if err != nil {
-			return utils.None[ModelServer](), fmt.Errorf("read Qwen user settings: %w", err)
+			return utils.None[netip.AddrPort](), fmt.Errorf("read Qwen user settings: %w", err)
 		}
 		if err := json.Unmarshal(data, &settings); err != nil {
-			return utils.None[ModelServer](), fmt.Errorf("invalid Qwen user settings at %s: %w", path, err)
+			return utils.None[netip.AddrPort](), fmt.Errorf("invalid Qwen user settings at %s: %w", path, err)
 		}
 	}
 	endpoint, err := settings.modelEndpoint(environment, invocation)
 	if err != nil {
-		return utils.None[ModelServer](), err
+		return utils.None[netip.AddrPort](), err
 	}
 	server, err := modelServerFromURL(endpoint)
 	if err != nil {
-		return utils.None[ModelServer](), fmt.Errorf("Qwen model endpoint: %w (edit the sandbox user settings on the host)", err)
+		return utils.None[netip.AddrPort](), fmt.Errorf("Qwen model endpoint: %w (edit the sandbox user settings on the host)", err)
 	}
 	return server, nil
 }

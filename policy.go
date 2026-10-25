@@ -11,10 +11,10 @@ import (
 // NetworkPolicy describes the destinations permitted by the supervisor.
 type NetworkPolicy struct {
 	Blocked     []netip.Prefix
-	ModelServer utils.Option[ModelServer]
+	ModelServer utils.Option[netip.AddrPort]
 }
 
-func newNetworkPolicy(host HostNetwork, extra []netip.Prefix, server utils.Option[ModelServer]) NetworkPolicy {
+func newNetworkPolicy(host HostNetwork, extra []netip.Prefix, server utils.Option[netip.AddrPort]) NetworkPolicy {
 	var blocked []netip.Prefix
 	for value := range strings.FieldsSeq(`0.0.0.0/8 10.0.0.0/8 100.64.0.0/10 127.0.0.0/8
 		169.254.0.0/16 172.16.0.0/12 192.0.0.0/24 192.0.2.0/24
@@ -43,7 +43,7 @@ func (policy NetworkPolicy) NFTables() string {
 	}
 	exception := ""
 	if model, present := policy.ModelServer.Get(); present {
-		exception = fmt.Sprintf("ip daddr %s tcp dport %d accept", model.Address, model.Port)
+		exception = fmt.Sprintf("ip daddr %s tcp dport %d accept", model.Addr(), model.Port())
 	}
 	return fmt.Sprintf(`table inet qwen_egress {
  set blocked4 { type ipv4_addr; flags interval; %s }

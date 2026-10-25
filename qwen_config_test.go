@@ -35,7 +35,7 @@ func TestConfiguredModelServer(t *testing.T) {
 	}
 	server, err := configuredModelServer(home, nil, Args{Mode: ModeQwen})
 	endpoint, present := server.Get()
-	if err != nil || !present || endpoint.Address.String() != "192.168.1.50" || endpoint.Port != 11434 {
+	if err != nil || !present || endpoint.String() != "192.168.1.50:11434" {
 		t.Fatalf("configured endpoint: %v, %v", server, err)
 	}
 	policy := newNetworkPolicy(HostNetwork{}, nil, server)

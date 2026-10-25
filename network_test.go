@@ -11,7 +11,7 @@ func TestModelServerValidation(t *testing.T) {
 	for _, value := range []string{"http://192.168.1.50:11434/v1", "https://8.8.8.8:65535/v1", "http://10.1.1.1:1"} {
 		server, err := modelServerFromURL(value)
 		endpoint, present := server.Get()
-		if err != nil || !present || endpoint.Port == 0 {
+		if err != nil || !present || endpoint.Port() == 0 {
 			t.Errorf("rejected %q: %v", value, err)
 		}
 	}
@@ -26,7 +26,7 @@ func TestModelServerValidation(t *testing.T) {
 	for endpoint, port := range map[string]uint16{"http://192.168.1.50/v1": 80, "https://192.168.1.50/v1": 443} {
 		server, err := modelServerFromURL(endpoint)
 		value, present := server.Get()
-		if err != nil || !present || value.Port != port {
+		if err != nil || !present || value.Port() != port {
 			t.Errorf("default port for %q: %v, %v", endpoint, server, err)
 		}
 	}

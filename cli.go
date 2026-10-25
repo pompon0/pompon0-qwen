@@ -1,13 +1,11 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"io"
 	"slices"
 	"strings"
 
-	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 )
 
@@ -16,6 +14,7 @@ type Mode string
 const (
 	ModeQwen           Mode = "qwen"
 	ModeIsolationCheck Mode = "isolation-check"
+	ModeHelp           Mode = "help"
 	// The probe runs inside the sandbox and bypasses host configuration discovery.
 	// It must never load project code, Qwen configuration, or hooks.
 	ModeIsolationProbe Mode = "internal-isolation-probe"
@@ -27,75 +26,122 @@ type Args struct {
 	Arguments []string
 }
 
-func newCommand(arguments []string, sandboxRunner func(context.Context, Args) error) *cobra.Command {
-	version := QwenVersion("latest")
-	root := &cobra.Command{
-		Use:   "qwen-isolated",
-		Short: "Run Qwen Code in a rootless Linux sandbox",
-		Long: "Run Qwen Code in a rootless Linux sandbox from a Git repository.\n\n" +
-			"Qwen is the default command. Requires Podman, nftables,\n" +
-			"iproute2, Node.js, and npm. npm installs the selected Qwen version at runtime.\n\n" +
-			"Configuration and packaging: https://github.com/pompon0/pompon0-qwen#readme",
-		Args:              cobra.NoArgs,
-		RunE:              func(cmd *cobra.Command, args []string) error { return cmd.Help() },
-		SilenceErrors:     true,
-		SilenceUsage:      true,
-		TraverseChildren:  true,
-		CompletionOptions: cobra.CompletionOptions{DisableDefaultCmd: true},
-	}
-	root.PersistentFlags().Var(&version, "qwen-version", "Qwen npm version or dist-tag (before the mode)")
-	root.AddCommand(&cobra.Command{
-		Use:   string(ModeQwen) + " [arguments...]",
-		Short: "Run Qwen Code (default)",
-		// Qwen owns --help/-h and all other flags. Its arguments stay unchanged.
-		DisableFlagParsing: true,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return sandboxRunner(cmd.Context(), Args{Mode: ModeQwen, Version: version, Arguments: args})
-		},
-	})
-	root.AddCommand(&cobra.Command{
-		Use:   string(ModeIsolationCheck),
-		Short: "Check filesystem, privileges, and networking isolation",
-		Args:  cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return sandboxRunner(cmd.Context(), Args{Mode: ModeIsolationCheck, Version: version})
-		},
-	})
-	root.AddCommand(&cobra.Command{
-		Use:    string(ModeIsolationProbe) + " HOST_CANARY",
-		Hidden: true,
-		Args:   cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := runIsolationChecks(cmd.Context(), version, args[0], cmd.OutOrStdout()); err != nil {
-				return fmt.Errorf("runIsolationChecks(): %w", err)
-			}
-			return nil
-		},
-	})
-	// Select the default command before Cobra searches for subcommands, so Qwen
-	// flag values that happen to name launcher commands cannot change dispatch.
-	// Skip only the launcher's leading version option when locating the mode;
-	// Cobra still parses and validates it. Everything after qwen belongs to Qwen,
-	// including prompt text that resembles launcher flags or commands.
+func parseArgs(arguments []string) (Args, error) {
+	result := Args{Mode: ModeQwen, Version: "latest"}
+	flags := pflag.NewFlagSet("qwen-isolated", pflag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	flags.Var(&result.Version, "qwen-version", "Qwen npm version or dist-tag")
+	help := flags.BoolP("help", "h", false, "Launcher command help")
+	// Locate only the launcher's leading version options; pflag parses their
+	// values. Qwen owns --help/-h and all other flags in default/Qwen mode.
 	modeIndex := 0
 	for modeIndex < len(arguments) {
 		if arguments[modeIndex] == "--qwen-version" {
-			if modeIndex+1 == len(arguments) {
-				root.SetArgs(arguments) // Let Cobra report the missing value.
-				return root
-			}
-			modeIndex += 2
+			modeIndex = min(modeIndex+2, len(arguments))
 		} else if strings.HasPrefix(arguments[modeIndex], "--qwen-version=") {
 			modeIndex++
 		} else {
 			break
 		}
 	}
-	if modeIndex == len(arguments) || strings.HasPrefix(arguments[modeIndex], "-") {
-		arguments = slices.Concat(arguments[:modeIndex], []string{string(ModeQwen)}, arguments[modeIndex:])
+	if err := flags.Parse(arguments[:modeIndex]); err != nil {
+		return Args{}, fmt.Errorf("parse launcher flags: %w", err)
 	}
-	root.SetArgs(arguments)
-	return root
+	remaining := arguments[modeIndex:]
+	// Select the mode before inspecting Qwen arguments, so prompt text that
+	// happens to name a launcher command cannot change dispatch.
+	if len(remaining) > 0 && !strings.HasPrefix(remaining[0], "-") {
+		result.Mode = Mode(remaining[0])
+		remaining = remaining[1:]
+	}
+	if result.Mode == ModeQwen {
+		result.Arguments = slices.Clone(remaining)
+		return result, nil
+	}
+	if err := flags.Parse(remaining); err != nil {
+		return Args{}, fmt.Errorf("parse %s flags: %w", result.Mode, err)
+	}
+	remaining = flags.Args()
+	switch result.Mode {
+	case ModeIsolationCheck, ModeIsolationProbe, ModeHelp:
+	default:
+		return Args{}, fmt.Errorf("unknown launcher command %q", result.Mode)
+	}
+	if *help {
+		result.Arguments = []string{string(result.Mode)}
+		result.Mode = ModeHelp
+		return result, nil
+	}
+	switch result.Mode {
+	case ModeIsolationCheck:
+		if len(remaining) != 0 {
+			return Args{}, fmt.Errorf("isolation-check accepts no positional arguments")
+		}
+	case ModeIsolationProbe:
+		if len(remaining) != 1 {
+			return Args{}, fmt.Errorf("%s requires HOST_CANARY", result.Mode)
+		}
+	case ModeHelp:
+		if len(remaining) > 1 {
+			return Args{}, fmt.Errorf("help accepts at most one command")
+		}
+		if len(remaining) == 1 {
+			switch Mode(remaining[0]) {
+			case ModeQwen, ModeIsolationCheck, ModeIsolationProbe, ModeHelp:
+			default:
+				return Args{}, fmt.Errorf("unknown help command %q", remaining[0])
+			}
+		}
+	}
+	result.Arguments = slices.Clone(remaining)
+	return result, nil
+}
+
+func printHelp(output io.Writer, arguments []string) error {
+	text := `Run Qwen Code in a rootless Linux sandbox from a Git repository.
+
+Usage:
+  qwen-isolated [--qwen-version VERSION] [qwen] [arguments...]
+  qwen-isolated [--qwen-version VERSION] isolation-check
+  qwen-isolated help [command]
+
+Commands:
+  qwen             Run Qwen Code (default)
+  isolation-check  Check filesystem, privileges, and networking isolation
+  help             Show launcher help
+
+Options:
+  --qwen-version VERSION  Qwen npm version or dist-tag (default latest; before the mode)
+
+Use qwen-isolated help [command] for launcher command help.
+In Qwen mode (the default), -h and --help are forwarded to Qwen Code.
+
+Requires Podman, nftables, iproute2, Node.js, and npm.
+npm installs and caches the selected Qwen version at runtime inside the sandbox.
+Configuration and packaging: https://github.com/pompon0/pompon0-qwen#readme
+`
+	if len(arguments) == 1 {
+		switch Mode(arguments[0]) {
+		case ModeQwen:
+			text = `Usage: qwen-isolated [--qwen-version VERSION] qwen [arguments...]
+
+Run Qwen Code. All arguments after qwen are forwarded unchanged,
+including -h and --help. Put launcher options before qwen.
+`
+		case ModeIsolationCheck:
+			text = `Usage: qwen-isolated [--qwen-version VERSION] isolation-check
+
+Check filesystem, privileges, and networking isolation inside a fresh sandbox.
+Use -h or --help after isolation-check to show this help.
+`
+		case ModeIsolationProbe:
+			text = "Usage: qwen-isolated internal-isolation-probe HOST_CANARY\n"
+		}
+	}
+	if _, err := fmt.Fprint(output, text); err != nil {
+		return fmt.Errorf("print help: %w", err)
+	}
+	return nil
 }
 
 // Consume values as arguments rather than interpreting prompt text as flags.

@@ -42,7 +42,20 @@ func main() {
 			}
 			return codeError(128 + int(sig.(syscall.Signal)))
 		})
-		return run(ctx, os.Args[1:])
+		args, err := parseArgs(os.Args[1:])
+		if err != nil {
+			return err
+		}
+		switch args.Mode {
+		case ModeQwen, ModeIsolationCheck:
+			return runSandbox(ctx, args)
+		case ModeIsolationProbe:
+			return runIsolationChecks(ctx, args.Version, args.Arguments[0], os.Stdout)
+		case ModeHelp:
+			return printHelp(os.Stdout, args.Arguments)
+		default:
+			return fmt.Errorf("unknown launcher command %q", args.Mode)
+		}
 	})
 	if err != nil {
 		slog.Error("sandbox failed", slog.Any("error", err))
@@ -51,8 +64,4 @@ func main() {
 		}
 		os.Exit(1)
 	}
-}
-
-func run(ctx context.Context, args []string) error {
-	return newCommand(args, runSandbox).ExecuteContext(ctx)
 }

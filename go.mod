@@ -5,7 +5,6 @@ go 1.27.3
 require (
 	github.com/google/go-cmp v0.7.0
 	github.com/pkg/errors v0.9.1
-	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.10
 	github.com/stretchr/testify v1.12.1
 	golang.org/x/exp v0.0.0-20261014143641-f0251eb4aa3e
@@ -14,7 +13,4 @@ require (
 	google.golang.org/protobuf v1.36.12
 )
 
-require (
-	github.com/inconshreveable/mousetrap v1.1.0 // indirect
-	go.yaml.in/yaml/v3 v3.0.5 // indirect
-)
+require go.yaml.in/yaml/v3 v3.0.5 // indirect

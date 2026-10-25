@@ -145,7 +145,7 @@ Relaunch after LAN/VPN route changes.
 | File | Responsibility |
 | --- | --- |
 | `main.go` | CLI entry point, signals, and exit status |
-| `cli.go` | Cobra commands, argument validation, model overrides, and help |
+| `cli.go` | Argument parsing, command validation, model overrides, and help |
 | `config.go` | Git repository discovery, tool discovery, state paths, environment |
 | `network.go` | Host IPv4 addresses, connected routes, and prefix normalization |
 | `qwen.go` | npm version selection and cached runtime execution |
@@ -156,9 +156,9 @@ Relaunch after LAN/VPN route changes.
 | `check.go` | Native Go isolation diagnostics executed inside the sandbox |
 | `packaging/aur/` | AUR recipe, metadata, and publishing workflow |
 
-Commands, argument validation, and help are defined with Cobra; installation
-needs only the executable. Qwen endpoint flags are inspected with `pflag` for
-firewall configuration.
+The launcher parses its version option and dispatches commands directly.
+`pflag` handles launcher flags and inspects Qwen endpoint flags for firewall
+configuration; Qwen arguments are forwarded unchanged.
 The optional positional mode follows any leading `--qwen-version` option and
 defaults to `qwen` when omitted or followed immediately by Qwen flags. Use an
 explicit `qwen` mode before a positional Qwen prompt. The remaining arguments are

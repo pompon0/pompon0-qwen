@@ -17,29 +17,24 @@ import (
 
 const networkSubnet = "10.0.2.0/24"
 
-type ModelServer struct {
-	Address netip.Addr
-	Port    uint16
-}
-
 // modelServerFromURL never resolves hostnames on the host. Public DNS names
 // continue to use normal filtered egress; LAN exceptions require a literal IPv4.
 // None means the endpoint needs no explicit model-server exception.
-func modelServerFromURL(value string) (utils.Option[ModelServer], error) {
+func modelServerFromURL(value string) (utils.Option[netip.AddrPort], error) {
 	if value == "" {
-		return utils.None[ModelServer](), nil
+		return utils.None[netip.AddrPort](), nil
 	}
 	endpoint, err := url.Parse(value)
 	if err != nil || endpoint.Hostname() == "" || (endpoint.Scheme != "http" && endpoint.Scheme != "https") {
-		return utils.None[ModelServer](), fmt.Errorf("model baseUrl must be an absolute HTTP or HTTPS URL")
+		return utils.None[netip.AddrPort](), fmt.Errorf("model baseUrl must be an absolute HTTP or HTTPS URL")
 	}
 	if strings.Contains(endpoint.Host, "$") {
-		return utils.None[ModelServer](), fmt.Errorf("unresolved variable in model baseUrl; use a literal endpoint or define it in settings.env")
+		return utils.None[netip.AddrPort](), fmt.Errorf("unresolved variable in model baseUrl; use a literal endpoint or define it in settings.env")
 	}
 	portText := endpoint.Port()
 	if portText == "" {
 		if strings.HasSuffix(endpoint.Host, ":") {
-			return utils.None[ModelServer](), fmt.Errorf("model baseUrl has an empty TCP port")
+			return utils.None[netip.AddrPort](), fmt.Errorf("model baseUrl has an empty TCP port")
 		}
 		portText = "80"
 		if endpoint.Scheme == "https" {
@@ -48,25 +43,25 @@ func modelServerFromURL(value string) (utils.Option[ModelServer], error) {
 	}
 	port, err := strconv.ParseUint(portText, 10, 16)
 	if err != nil || port == 0 {
-		return utils.None[ModelServer](), fmt.Errorf("model baseUrl has an invalid TCP port")
+		return utils.None[netip.AddrPort](), fmt.Errorf("model baseUrl has an invalid TCP port")
 	}
 	ip, err := netip.ParseAddr(endpoint.Hostname())
 	if err != nil {
 		if strings.EqualFold(endpoint.Hostname(), "localhost") || strings.HasSuffix(strings.ToLower(endpoint.Hostname()), ".localhost") {
-			return utils.None[ModelServer](), fmt.Errorf("model baseUrl must use a LAN/public IPv4 address instead of localhost")
+			return utils.None[netip.AddrPort](), fmt.Errorf("model baseUrl must use a LAN/public IPv4 address instead of localhost")
 		}
-		return utils.None[ModelServer](), nil
+		return utils.None[netip.AddrPort](), nil
 	}
 	if !ip.Is4() {
-		return utils.None[ModelServer](), fmt.Errorf("IPv6 model endpoints are not supported; use a LAN/public IPv4 address")
+		return utils.None[netip.AddrPort](), fmt.Errorf("IPv6 model endpoints are not supported; use a LAN/public IPv4 address")
 	}
 	if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsMulticast() || ip.IsUnspecified() || netip.MustParsePrefix("240.0.0.0/4").Contains(ip) {
-		return utils.None[ModelServer](), fmt.Errorf("model baseUrl must use a LAN/public IPv4 address")
+		return utils.None[netip.AddrPort](), fmt.Errorf("model baseUrl must use a LAN/public IPv4 address")
 	}
 	if netip.MustParsePrefix(networkSubnet).Contains(ip) {
-		return utils.None[ModelServer](), fmt.Errorf("model baseUrl overlaps the sandbox virtual subnet 10.0.2.0/24")
+		return utils.None[netip.AddrPort](), fmt.Errorf("model baseUrl overlaps the sandbox virtual subnet 10.0.2.0/24")
 	}
-	return utils.Some(ModelServer{Address: ip, Port: uint16(port)}), nil
+	return utils.Some(netip.AddrPortFrom(ip, uint16(port))), nil
 }
 
 func parseIPv4Prefix(value string) (netip.Prefix, error) {
