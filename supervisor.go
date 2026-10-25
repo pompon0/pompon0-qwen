@@ -104,7 +104,7 @@ func awaitReady(ctx context.Context, ready *os.File, process *managedProcess, de
 	}
 }
 
-// The setup shell waits until both nftables and slirp are ready before execing
+// The setup helper waits until both nftables and slirp are ready before execing
 // Bubblewrap. Qwen never runs during the privileged setup phase.
 func supervise(ctx context.Context, tools Tools, plan SandboxPlan, runDir string) (code int, err error) {
 	var opened []*os.File
@@ -159,10 +159,13 @@ func supervise(ctx context.Context, tools Tools, plan SandboxPlan, runDir string
 	if err := ctx.Err(); err != nil {
 		return 0, err
 	}
+	launcher, err := os.Executable()
+	if err != nil {
+		return 0, fmt.Errorf("locate setup helper: %w", err)
+	}
 	args := []string{
 		"--user", "--map-root-user", "--net", "--",
-		tools.Bash, "--noprofile", "--norc", "-c", setupScript, "qwen-net-setup",
-		tools.NFT, filepath.Join(runDir, "policy.nft"), "3", "4", tools.Bubblewrap,
+		launcher, string(helperSetup), tools.NFT, filepath.Join(runDir, "policy.nft"), tools.Bubblewrap,
 	}
 	args = append(args, plan.BubblewrapArguments...)
 	args = append(args, "--")

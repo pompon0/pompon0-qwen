@@ -22,6 +22,9 @@ func main() {
 }
 
 func run() int {
+	if code, handled := runInternalHelper(os.Args[1:]); handled {
+		return code
+	}
 	if len(os.Args) == 2 && os.Args[1] == "--isolation-help" {
 		fmt.Print(helpText)
 		return 0

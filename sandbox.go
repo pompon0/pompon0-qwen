@@ -9,15 +9,6 @@ import (
 	"slices"
 )
 
-// These small shell programs need to run in namespaces where the launcher
-// binary is deliberately unavailable. They are embedded into the Go binary.
-//
-//go:embed scripts/setup.sh
-var setupScript string
-
-//go:embed scripts/check.sh
-var checkScript string
-
 //go:embed help.txt
 var helpText string
 
@@ -88,7 +79,13 @@ func buildSandbox(config Config, invocation Invocation, runDir string) (SandboxP
 	case ModeShell:
 		workload = append([]string{"/usr/bin/bash", "--noprofile", "--norc"}, invocation.Arguments...)
 	case ModeCheck:
-		workload = []string{"/usr/bin/bash", "--noprofile", "--norc", "-c", checkScript, "check", filepath.Join(runDir, "host-canary")}
+		// The launcher is otherwise unavailable inside the sandbox. Check
+		// mode alone mounts it read-only so its Go diagnostics can run there.
+		if config.Launcher == "" {
+			return SandboxPlan{}, fmt.Errorf("check mode requires the launcher executable")
+		}
+		args = append(args, "--ro-bind", config.Launcher, sandboxCheckerPath)
+		workload = []string{sandboxCheckerPath, string(helperCheck), filepath.Join(runDir, "host-canary")}
 	default:
 		return SandboxPlan{}, fmt.Errorf("unknown sandbox mode %d", invocation.Mode)
 	}

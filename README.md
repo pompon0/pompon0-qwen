@@ -1,7 +1,9 @@
 # qwen-isolated
 
 A rootless Linux launcher for Qwen Code.
-The Go executable uses `golang.org/x/sync/errgroup` for structured concurrency.
+The launcher, trusted setup helper, and isolation checks are implemented in Go.
+The executable uses `golang.org/x/sync/errgroup` for structured concurrency and
+`golang.org/x/sys/unix` for Linux system calls.
 
 ## Arch Linux package
 
@@ -121,13 +123,15 @@ Relaunch after LAN/VPN route changes.
 | `policy.go` | Destination policy and nftables rendering |
 | `sandbox.go` | Invocation modes, mounts, workload, temporary configuration |
 | `supervisor.go` | Startup handshake, child processes, timeouts, cleanup |
-| `scripts/setup.sh` | Trusted firewall setup and workload startup gate |
-| `scripts/check.sh` | Checks executed inside the sandbox |
+| `helpers.go` | Private Go helper modes, firewall setup, and workload startup gate |
+| `check.go` | Native Go isolation diagnostics executed inside the sandbox |
 | `help.txt` | CLI help |
 | `packaging/aur/` | AUR recipe, metadata, and publishing workflow |
 
-Shell scripts and help are embedded at build time; installation needs only the
-executable. Configuration, policy, sandbox plans, and process supervision are
+Help is embedded at build time; installation needs only the executable.
+The launcher re-executes itself for trusted setup and mounts itself read-only
+inside the sandbox only for `--check`. Bash is used only for `--shell`.
+Configuration, policy, sandbox plans, and process supervision are
 separate so each can be changed without redesigning the rest of the launcher.
 
 ## Isolation boundary

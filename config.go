@@ -17,6 +17,7 @@ type Tools struct {
 
 type Config struct {
 	Project, WorkingDirectory, NodePrefix, State, Home string
+	Launcher                                           string
 	Tools                                              Tools
 	ModelServer                                        *ModelServer
 	ExtraDenied                                        []netip.Prefix
@@ -86,11 +87,11 @@ func discoverConfig() (Config, error) {
 	if err != nil {
 		return c, err
 	}
-	launcher, err := os.Executable()
+	c.Launcher, err = os.Executable()
 	if err != nil {
 		return c, err
 	}
-	launcher, err = filepath.EvalSymlinks(launcher)
+	c.Launcher, err = filepath.EvalSymlinks(c.Launcher)
 	if err != nil {
 		return c, err
 	}
@@ -100,7 +101,7 @@ func discoverConfig() (Config, error) {
 	if inside(c.NodePrefix, c.Project) {
 		return c, fmt.Errorf("Node installation must be outside the project")
 	}
-	if inside(launcher, c.Project) || inside(launcher, c.State) {
+	if inside(c.Launcher, c.Project) || inside(c.Launcher, c.State) {
 		return c, fmt.Errorf("install this launcher outside the project and sandbox state")
 	}
 	c.Home = filepath.Join(c.State, "home")

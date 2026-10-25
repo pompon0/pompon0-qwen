@@ -6,7 +6,7 @@ import (
 )
 
 func TestInvocationAndWorkload(t *testing.T) {
-	c := Config{Project: "/host/project", Home: "/host/state/home", NodePrefix: "/host/node", WorkingDirectory: "/workspace/sub", Environment: map[string]string{"HOME": "/home/qwen"}}
+	c := Config{Project: "/host/project", Home: "/host/state/home", NodePrefix: "/host/node", WorkingDirectory: "/workspace/sub", Launcher: "/host/launcher", Environment: map[string]string{"HOME": "/home/qwen"}}
 	for _, test := range []struct{ args, workload []string }{
 		{nil, []string{"/opt/node/bin/qwen"}},
 		{[]string{"--model", "a b"}, []string{"/opt/node/bin/qwen", "--model", "a b"}},
@@ -22,6 +22,9 @@ func TestInvocationAndWorkload(t *testing.T) {
 		}
 		if !slices.Equal(plan.Workload, test.workload) {
 			t.Errorf("workload: %v", plan.Workload)
+		}
+		if containsSequence(plan.BubblewrapArguments, []string{"--ro-bind", c.Launcher, sandboxCheckerPath}) {
+			t.Fatal("launcher should only be exposed in check mode")
 		}
 		for _, sequence := range [][]string{
 			{"--cap-drop", "ALL", "--clearenv"}, {"--unshare-user", "--disable-userns", "--share-net"},
@@ -44,8 +47,11 @@ func TestInvocationAndWorkload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if plan.Workload[len(plan.Workload)-1] != "/run-dir/host-canary" {
-		t.Fatal("check canary path missing")
+	if !slices.Equal(plan.Workload, []string{sandboxCheckerPath, string(helperCheck), "/run-dir/host-canary"}) {
+		t.Fatalf("check should execute the Go helper: %v", plan.Workload)
+	}
+	if !containsSequence(plan.BubblewrapArguments, []string{"--ro-bind", c.Launcher, sandboxCheckerPath}) {
+		t.Fatal("check executable is not mounted read-only")
 	}
 }
 
