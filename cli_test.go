@@ -103,6 +103,48 @@ func TestCommandPropagatesRunnerError(t *testing.T) {
 	}
 }
 
+func TestQwenVersionSelection(t *testing.T) {
+	for _, test := range []struct {
+		arguments []string
+		version   QwenVersion
+		mode      Mode
+		forwarded []string
+	}{
+		{version: "latest", mode: ModeQwen},
+		{arguments: []string{"--qwen-version", "0.26.1"}, version: "0.26.1", mode: ModeQwen},
+		{arguments: []string{"--qwen-version=nightly", "--model", "local"}, version: "nightly", mode: ModeQwen, forwarded: []string{"--model", "local"}},
+		{arguments: []string{"--qwen-version", "0.26.1", "qwen", "--prompt", "--qwen-version=other"}, version: "0.26.1", mode: ModeQwen, forwarded: []string{"--prompt", "--qwen-version=other"}},
+		{arguments: []string{"--qwen-version", "0.26.1", "isolation-check"}, version: "0.26.1", mode: ModeIsolationCheck},
+	} {
+		command := newCommand(test.arguments, func(_ context.Context, args Args) error {
+			if args.Version != test.version || args.Mode != test.mode || !slices.Equal(args.Arguments, test.forwarded) {
+				t.Errorf("arguments %v: got %+v", test.arguments, args)
+			}
+			return nil
+		})
+		if err := command.ExecuteContext(t.Context()); err != nil {
+			t.Fatalf("arguments %v: %v", test.arguments, err)
+		}
+	}
+}
+
+func TestRejectInvalidQwenVersions(t *testing.T) {
+	for _, arguments := range [][]string{
+		{"--qwen-version"}, {"--qwen-version="},
+		{"--qwen-version=file:/tmp/package", "qwen"},
+		{"--qwen-version=npm:other-package", "qwen"},
+		{"--qwen-version=../package", "qwen"},
+	} {
+		command := newCommand(arguments, func(context.Context, Args) error {
+			t.Fatal("invalid version reached sandbox runner")
+			return nil
+		})
+		if err := command.ExecuteContext(t.Context()); err == nil {
+			t.Errorf("accepted invalid version arguments %v", arguments)
+		}
+	}
+}
+
 func TestIsolationProbeParsesFlags(t *testing.T) {
 	command := newCommand([]string{string(ModeIsolationProbe), "--unknown"}, runSandbox)
 	if err := command.ExecuteContext(t.Context()); err == nil || !strings.Contains(err.Error(), "unknown flag") {

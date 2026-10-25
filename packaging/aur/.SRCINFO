@@ -1,7 +1,7 @@
 pkgbase = qwen-isolated-git
 	pkgdesc = Rootless Qwen Code sandbox with restricted filesystem and network access
 	pkgver = r0.g0000000
-	pkgrel = 1
+	pkgrel = 2
 	url = https://github.com/pompon0/pompon0-qwen
 	arch = x86_64
 	license = unknown
@@ -13,7 +13,8 @@ pkgbase = qwen-isolated-git
 	depends = coreutils
 	depends = glibc
 	depends = iproute2
-	optdepends = nodejs: Node.js runtime, as an alternative to a user-managed nvm installation
+	depends = nodejs>=22
+	depends = npm
 	provides = qwen-isolated
 	conflicts = qwen-isolated
 	options = !debug

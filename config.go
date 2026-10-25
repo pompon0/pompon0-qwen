@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/netip"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -18,12 +17,12 @@ type Tools struct {
 }
 
 type Config struct {
-	Project, WorkingDirectory, NodePrefix, State, Home string
-	Launcher                                           string
-	Tools                                              Tools
-	ModelServer                                        utils.Option[ModelServer]
-	ExtraDenied                                        []netip.Prefix
-	Environment                                        map[string]string
+	Project, WorkingDirectory, State, Home string
+	Launcher                               string
+	Tools                                  Tools
+	ModelServer                            utils.Option[ModelServer]
+	ExtraDenied                            []netip.Prefix
+	Environment                            map[string]string
 }
 
 func discoverConfig() (Config, error) {
@@ -60,27 +59,6 @@ func discoverConfig() (Config, error) {
 	if err != nil {
 		return c, err
 	}
-	node, err := exec.LookPath("node")
-	if err != nil {
-		return c, fmt.Errorf("missing node; activate nvm: %w", err)
-	}
-	node, err = filepath.EvalSymlinks(node)
-	if err != nil {
-		return c, err
-	}
-	node, err = filepath.Abs(node)
-	if err != nil {
-		return c, err
-	}
-	c.NodePrefix = filepath.Dir(filepath.Dir(node))
-	qwen, err := filepath.EvalSymlinks(filepath.Join(c.NodePrefix, "bin/qwen"))
-	if err != nil || !inside(qwen, c.NodePrefix) {
-		return c, fmt.Errorf("activate nvm and install Qwen with npm install -g @qwen-code/qwen-code")
-	}
-	info, err := os.Stat(qwen)
-	if err != nil || !info.Mode().IsRegular() {
-		return c, fmt.Errorf("Qwen must be a regular file within the Node installation")
-	}
 	// Retain the legacy state path so existing Qwen settings survive migrations.
 	c.State = filepath.Join(home, ".local/state/qwen-bwrap", fmt.Sprintf("%x", sha256.Sum256([]byte(c.Project))))
 	if err := os.MkdirAll(c.State, 0o700); err != nil {
@@ -100,9 +78,6 @@ func discoverConfig() (Config, error) {
 	}
 	if inside(c.State, c.Project) {
 		return c, fmt.Errorf("sandbox state must be outside the project")
-	}
-	if inside(c.NodePrefix, c.Project) {
-		return c, fmt.Errorf("Node installation must be outside the project")
 	}
 	if inside(c.Launcher, c.Project) || inside(c.Launcher, c.State) {
 		return c, fmt.Errorf("install this launcher outside the project and sandbox state")
@@ -128,7 +103,7 @@ func discoverTools() (Tools, error) {
 		NFT:    "/usr/bin/nft",
 		IP:     "/usr/bin/ip",
 	}
-	for _, path := range []string{t.Podman, t.NFT, t.IP} {
+	for _, path := range []string{t.Podman, t.NFT, t.IP, "/usr/bin/node", "/usr/bin/npm"} {
 		info, err := os.Stat(path)
 		if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
 			return Tools{}, fmt.Errorf("missing executable %s; see help", path)
@@ -169,8 +144,9 @@ func sandboxEnvironment(lookup func(string) (string, bool)) map[string]string {
 	}
 	env := map[string]string{
 		"HOME": "/home/qwen", "USER": "qwen", "LOGNAME": "qwen",
-		"PATH": "/opt/node/bin:/usr/bin", "LANG": "C.UTF-8", "TERM": term, "TMPDIR": "/tmp",
-		"XDG_CONFIG_HOME": "/home/qwen/.config", "XDG_CACHE_HOME": "/home/qwen/.cache",
+		"PATH": "/usr/bin", "LANG": "C.UTF-8", "TERM": term, "TMPDIR": "/tmp",
+		"NPM_CONFIG_CACHE": "/home/qwen/.cache/npm",
+		"XDG_CONFIG_HOME":  "/home/qwen/.config", "XDG_CACHE_HOME": "/home/qwen/.cache",
 		"XDG_DATA_HOME": "/home/qwen/.local/share", "XDG_STATE_HOME": "/home/qwen/.local/state",
 	}
 	for _, name := range []string{"OPENAI_BASE_URL", "OPENAI_API_KEY", "OPENAI_MODEL"} {

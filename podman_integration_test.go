@@ -55,7 +55,7 @@ func TestPodmanIntegration(t *testing.T) {
 	modelAddress := netip.MustParseAddrPort(model.Listener.Addr().String())
 	directory := t.TempDir()
 	root := filepath.Join(directory, "run")
-	config := Config{Project: filepath.Join(directory, "project"), Home: filepath.Join(directory, "home"), WorkingDirectory: "/workspace", NodePrefix: "/usr", Tools: Tools{Podman: "/usr/bin/podman", NFT: "/usr/bin/nft", IP: "/usr/bin/ip"}, Environment: sandboxEnvironment(func(string) (string, bool) { return "", false })}
+	config := Config{Project: filepath.Join(directory, "project"), Home: filepath.Join(directory, "home"), WorkingDirectory: "/workspace", Tools: Tools{Podman: "/usr/bin/podman", NFT: "/usr/bin/nft", IP: "/usr/bin/ip"}, Environment: sandboxEnvironment(func(string) (string, bool) { return "", false })}
 	config.Launcher, err = os.Executable()
 	if err != nil {
 		t.Fatal(err)

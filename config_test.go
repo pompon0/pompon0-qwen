@@ -91,7 +91,7 @@ func TestInsideUsesPathBoundaries(t *testing.T) {
 func TestEnvironmentAllowlist(t *testing.T) {
 	host := map[string]string{"OPENAI_API_KEY": "", "OPENAI_MODEL": "model", "AWS_SECRET_ACCESS_KEY": "secret", "HOME": "/host", "PATH": "/untrusted", "LD_PRELOAD": "unsafe"}
 	env := sandboxEnvironment(func(name string) (string, bool) { value, ok := host[name]; return value, ok })
-	if env["HOME"] != "/home/qwen" || env["PATH"] != "/opt/node/bin:/usr/bin" || env["TERM"] != "xterm-256color" {
+	if env["HOME"] != "/home/qwen" || env["PATH"] != "/usr/bin" || env["TERM"] != "xterm-256color" {
 		t.Fatal("host environment replaced sandbox defaults")
 	}
 	if value, ok := env["OPENAI_API_KEY"]; !ok || value != "" {

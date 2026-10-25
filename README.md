@@ -13,11 +13,12 @@ The planned AUR package is `qwen-isolated-git`. Its recipe is in
 repository is public. It is not published to the AUR yet.
 
 The package builds from source with Go 1.27.3 or later and installs the launcher
-at `/usr/bin/qwen-isolated`. Pacman manages its sandbox dependencies. Qwen Code
-must already be installed in the Node prefix selected by your active `node`,
-including when using nvm. Run as your ordinary user with working rootless Podman
-and pasta networking. A single UID/GID mapping is sufficient for this one-user
-rootfs; subordinate ranges remain useful for normal multi-user container images.
+at `/usr/bin/qwen-isolated`. Pacman manages its sandbox dependencies, including
+Node.js 22 or later and npm. Qwen Code is installed by npm at runtime inside the
+sandbox; no existing Qwen installation or nvm setup is required. Run as your
+ordinary user with working rootless Podman and pasta networking. A single UID/GID
+mapping is sufficient for this one-user rootfs; subordinate ranges remain useful
+for normal multi-user container images.
 
 ## Run in a Git repository
 
@@ -39,6 +40,31 @@ are rejected; no custom approval marker is needed.
 * `qwen-isolated [arguments...]` forwards arguments to Qwen.
 * `qwen-isolated isolation-check` tests filesystem, privileges, and sample network connections.
 * `qwen-isolated help` prints help without starting the sandbox.
+* `--qwen-version VERSION` selects a published npm version or dist-tag; put it before the mode.
+
+### Qwen version and installation
+
+The default version is `latest`. Select a specific release or npm dist-tag at startup:
+
+```sh
+qwen-isolated                              # latest
+qwen-isolated --qwen-version 0.26.1         # specific release
+qwen-isolated --qwen-version latest qwen --model your-model
+qwen-isolated --qwen-version 0.26.1 isolation-check
+```
+
+The launcher runs `npm exec --package=@qwen-code/qwen-code@VERSION -- qwen`
+after installing the firewall. npm resolves tags against the registry at startup
+and installs missing packages in `/home/qwen/.cache/npm`, within the repository's
+persistent sandbox home. Downloads are reused across launches; npm manages the
+cache. A new `latest` release is selected on the next launch. Version numbers
+and dist-tags are accepted; local paths, Git URLs, and alternate packages are not.
+
+Installation and package scripts run with the sandbox's normal restrictions.
+Package discovery uses the sandbox home as its npm prefix, preserving the
+project working directory without using project-local Qwen packages. Node.js and
+npm come from the read-only host `/usr` mount. Qwen arguments are forwarded
+unchanged after npm's `--` separator.
 
 ### Qwen configuration
 
@@ -122,6 +148,7 @@ Relaunch after LAN/VPN route changes.
 | `cli.go` | Cobra commands, argument validation, model overrides, and help |
 | `config.go` | Git repository discovery, tool discovery, state paths, environment |
 | `network.go` | Host IPv4 addresses, connected routes, and prefix normalization |
+| `qwen.go` | npm version selection and cached runtime execution |
 | `qwen_config.go` | Qwen user settings and selected model endpoint resolution |
 | `policy.go` | nftables destination policy and exact model-server TCP exception |
 | `sandbox.go` | Minimal rootfs, explicit host mounts, and Podman command arguments |
@@ -132,9 +159,9 @@ Relaunch after LAN/VPN route changes.
 Commands, argument validation, and help are defined with Cobra; installation
 needs only the executable. Qwen endpoint flags are inspected with `pflag` for
 firewall configuration.
-The optional positional mode must come first and defaults to `qwen` when omitted
-or when the first argument starts with `-`. Use an explicit `qwen` mode before a
-positional Qwen prompt. The remaining arguments are
+The optional positional mode follows any leading `--qwen-version` option and
+defaults to `qwen` when omitted or followed immediately by Qwen flags. Use an
+explicit `qwen` mode before a positional Qwen prompt. The remaining arguments are
 forwarded unchanged to Qwen. `--help` and `-h` remain Qwen flags; use
 `help` for launcher help.
 The launcher is mounted read-only inside the sandbox only for `isolation-check`.
@@ -144,8 +171,8 @@ There is no custom namespace/TAP helper or embedded network stack.
 
 The launcher runs a rootless Podman container with `--rootfs` pointing to a
 fresh mount skeleton. It contains directory mount points, symlinks, and generated
-`/etc` files, with no downloaded image or OS installation. Host `/usr` and the
-active Node prefix are mounted read-only; project and per-repository home mounts
+`/etc` files, with no downloaded image or OS installation. Host `/usr`, including
+Node.js and npm, is mounted read-only; project and per-repository home mounts
 remain writable. Podman supplies private PID/IPC/UTS/network namespaces, an init
 process, a read-only root filesystem, and its standard seccomp restrictions.
 All workload capabilities are dropped and privilege gains are disabled.
@@ -161,7 +188,7 @@ IPv6 destinations remain blocked. No host firewall rules are changed.
 The launcher always removes its named container after the workload exits, fails,
 or is canceled. Podman owns the pasta/runtime processes and namespace teardown.
 
-The project and sandbox home are writable. `/usr`, the Node installation, and
+The project and sandbox home (including npm's cache) are writable. `/usr` and
 selected system configuration are read-only. Temporary mounts are ephemeral.
 Qwen can delete project files and transmit data to allowed internet destinations.
 Allowed internet services can relay traffic elsewhere. Podman applies its

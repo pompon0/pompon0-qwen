@@ -68,7 +68,7 @@ func buildSandbox(config Config, invocation Args, runDir string) (SandboxPlan, e
 		source, target string
 		writable       bool
 	}{
-		{"/usr", "/usr", false}, {config.NodePrefix, "/opt/node", false},
+		{"/usr", "/usr", false},
 		{config.Project, "/workspace", true}, {config.Home, "/home/qwen", true},
 	}
 	for _, mount := range mounts {
@@ -87,14 +87,14 @@ func buildSandbox(config Config, invocation Args, runDir string) (SandboxPlan, e
 	var workload []string
 	switch invocation.Mode {
 	case ModeQwen:
-		workload = append([]string{"/opt/node/bin/qwen"}, invocation.Arguments...)
+		workload = qwenCommand(invocation.Version, invocation.Arguments)
 	case ModeIsolationCheck:
 		// The diagnostic binary is exposed only for the explicit isolation check.
 		if config.Launcher == "" {
 			return SandboxPlan{}, fmt.Errorf("isolation-check requires the launcher executable")
 		}
 		args = append(args, "--mount", bindMount(config.Launcher, sandboxCheckerPath, false))
-		workload = []string{sandboxCheckerPath, string(ModeIsolationProbe), filepath.Join(runDir, "host-canary")}
+		workload = []string{sandboxCheckerPath, string(ModeIsolationProbe), "--qwen-version", invocation.Version.String(), filepath.Join(runDir, "host-canary")}
 	default:
 		return SandboxPlan{}, fmt.Errorf("unknown sandbox mode %q", invocation.Mode)
 	}
@@ -125,7 +125,7 @@ func writeRunFiles(runDir string) error {
 	root := filepath.Join(runDir, "rootfs")
 	// This is a mount skeleton, not an OS image. Executables and libraries come
 	// from read-only host mounts; only the project and Qwen home persist writes.
-	for _, directory := range []string{"usr", "etc", "dev", "proc", "sys", "tmp", "run", "workspace", "home/qwen", "opt/node"} {
+	for _, directory := range []string{"usr", "etc", "dev", "proc", "sys", "tmp", "run", "workspace", "home/qwen"} {
 		if err := os.MkdirAll(filepath.Join(root, directory), 0o700); err != nil {
 			return fmt.Errorf("MkdirAll(%s): %w", directory, err)
 		}

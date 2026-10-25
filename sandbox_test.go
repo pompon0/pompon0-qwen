@@ -10,9 +10,9 @@ import (
 )
 
 func TestPodmanPlan(t *testing.T) {
-	config := Config{Project: "/host/project, with spaces", Home: "/host/home", NodePrefix: "/host/node", WorkingDirectory: "/workspace/sub", Launcher: "/host/launcher", Environment: map[string]string{"HOME": "/home/qwen", "PATH": "/opt/node/bin:/usr/bin"}}
+	config := Config{Project: "/host/project, with spaces", Home: "/host/home", WorkingDirectory: "/workspace/sub", Launcher: "/host/launcher", Environment: map[string]string{"HOME": "/home/qwen", "PATH": "/usr/bin"}}
 	for _, mode := range []Mode{ModeQwen, ModeIsolationCheck} {
-		plan, err := buildSandbox(config, Args{Mode: mode, Arguments: []string{"--model", "local"}}, "/run-dir")
+		plan, err := buildSandbox(config, Args{Mode: mode, Version: "0.26.1", Arguments: []string{"--model", "local"}}, "/run-dir")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -42,20 +42,25 @@ func TestPodmanPlan(t *testing.T) {
 		if !slices.Contains(mounts["/workspace"], "src="+config.Project) || slices.Contains(mounts["/workspace"], "ro=true") {
 			t.Fatal("project must remain writable with intact path")
 		}
-		for _, target := range []string{"/usr", "/opt/node"} {
+		for _, target := range []string{"/usr"} {
 			if !slices.Contains(mounts[target], "ro=true") {
 				t.Errorf("%s must be read-only", target)
 			}
 		}
 		if mode == ModeQwen {
-			if !slices.Equal(plan.Workload, []string{"/opt/node/bin/qwen", "--model", "local"}) {
+			if !containsSequence(plan.Workload, []string{"--package=@qwen-code/qwen-code@0.26.1", "--", "qwen", "--model", "local"}) {
 				t.Fatal(plan.Workload)
 			}
 			if _, present := mounts[sandboxCheckerPath]; present {
 				t.Fatal("diagnostic executable leaked into normal sandbox")
 			}
-		} else if !slices.Contains(mounts[sandboxCheckerPath], "ro=true") {
-			t.Fatal("diagnostic executable must be mounted read-only")
+		} else {
+			if !slices.Contains(mounts[sandboxCheckerPath], "ro=true") {
+				t.Fatal("diagnostic executable must be mounted read-only")
+			}
+			if !containsSequence(plan.Workload, []string{"--qwen-version", "0.26.1"}) {
+				t.Fatal("diagnostics must check the selected Qwen version")
+			}
 		}
 	}
 }

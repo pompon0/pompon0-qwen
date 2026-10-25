@@ -6,12 +6,12 @@ uses a different name. This VCS package needs no release tags: `pkgver()` uses
 the upstream commit count and abbreviated commit ID.
 
 The package installs `/usr/bin/qwen-isolated` and its documentation. Pacman
-manages the launcher and its sandbox dependencies. Qwen Code remains an external
-prerequisite: its CLI must be installed within the Node prefix selected by
-`node` on the user's `PATH`. The launcher supports a user-managed nvm runtime;
-Arch's `nodejs` is therefore an optional dependency rather than a forced second
-Node installation. The package does not run npm, initialize Git repositories, or
-change user configuration during installation.
+manages the launcher and its sandbox dependencies, including Node.js 22 or later
+and npm. Qwen Code is fetched at runtime by npm inside the sandbox, using
+`--qwen-version` (default `latest`) to select a release or dist-tag. npm caches
+installations in the persistent sandbox home. No existing Qwen installation or
+nvm runtime is required. The package does not run npm, initialize Git
+repositories, or change user configuration during pacman installation.
 
 ## Before submitting
 
