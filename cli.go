@@ -18,7 +18,6 @@ const (
 	ModeIsolationCheck Mode = "isolation-check"
 	// Helpers run in different privilege contexts and are dispatched before normal
 	// CLI setup. They must never load project code, Qwen configuration, or hooks.
-	ModeSetup          Mode = "internal-net-setup"
 	ModeIsolationProbe Mode = "internal-isolation-probe"
 	ModeUserNSProbe    Mode = "internal-userns-probe"
 )
@@ -33,7 +32,7 @@ func newCommand(arguments []string, sandboxRunner func(context.Context, Args) er
 		Use:   "qwen-isolated",
 		Short: "Run Qwen Code in a rootless Linux sandbox",
 		Long: "Run Qwen Code in a rootless Linux sandbox from a Git repository.\n\n" +
-			"Qwen is the default command. Requires bubblewrap,\n" +
+			"Qwen is the default command. Requires Podman, nftables,\n" +
 			"and iproute2. Qwen must be installed in the active Node prefix.\n\n" +
 			"Configuration and packaging: https://github.com/pompon0/pompon0-qwen#readme",
 		Args:              cobra.NoArgs,
@@ -59,24 +58,6 @@ func newCommand(arguments []string, sandboxRunner func(context.Context, Args) er
 			return sandboxRunner(cmd.Context(), Args{Mode: ModeIsolationCheck})
 		},
 	})
-	// Helpers run before normal CLI setup and never load project code or settings.
-	setupCommand := &cobra.Command{
-		Use:    string(ModeSetup) + " SANDBOX [arguments...]",
-		Hidden: true,
-		Args:   cobra.MinimumNArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			setup := namespaceSetup{
-				SandboxArguments: args,
-			}
-			if err := setup.run(createNamespaceTAP); err != nil {
-				return fmt.Errorf("namespaceSetup.run(): %w", err)
-			}
-			return nil
-		},
-	}
-	// After SANDBOX, parsing stops so Bubblewrap owns its flags and -- separator.
-	setupCommand.Flags().SetInterspersed(false)
-	root.AddCommand(setupCommand)
 	root.AddCommand(&cobra.Command{
 		Use:    string(ModeIsolationProbe) + " HOST_CANARY",
 		Hidden: true,

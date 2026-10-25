@@ -2,16 +2,24 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/csv"
 	"fmt"
 	"maps"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
+
+	"golang.org/x/sys/unix"
 )
 
+type containerName string
+
 type SandboxPlan struct {
-	BubblewrapArguments []string
-	Workload            []string
+	Name         containerName
+	RunArguments []string
+	Workload     []string
 }
 
 func runSandbox(ctx context.Context, invocation Args) error {
@@ -30,7 +38,7 @@ func runSandbox(ctx context.Context, invocation Args) error {
 	policy := newNetworkPolicy(network, config.ExtraDenied, config.ModelServer)
 	runDir, err := os.MkdirTemp(config.State, "run-")
 	if err != nil {
-		return err
+		return fmt.Errorf("MkdirTemp(): %w", err)
 	}
 	defer os.RemoveAll(runDir)
 	if err := writeRunFiles(runDir); err != nil {
@@ -44,57 +52,108 @@ func runSandbox(ctx context.Context, invocation Args) error {
 }
 
 func buildSandbox(config Config, invocation Args, runDir string) (SandboxPlan, error) {
+	name := containerName("qwen-isolated-" + strings.ToLower(rand.Text()))
 	args := []string{
-		"--unshare-all", "--unshare-user", "--disable-userns", "--share-net",
-		"--die-with-parent", "--new-session", "--cap-drop", "ALL", "--clearenv",
-		"--ro-bind", "/usr", "/usr",
-		"--symlink", "usr/bin", "/bin", "--symlink", "usr/bin", "/sbin",
-		"--symlink", "usr/lib", "/lib", "--symlink", "usr/lib", "/lib64",
-		"--ro-bind", config.NodePrefix, "/opt/node",
-		"--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp", "--tmpfs", "/run",
-		"--bind", config.Project, "/workspace", "--bind", config.Home, "/home/qwen",
-		"--ro-bind", filepath.Join(runDir, "resolv.conf"), "/etc/resolv.conf",
-		"--ro-bind", filepath.Join(runDir, "passwd"), "/etc/passwd",
-		"--ro-bind", filepath.Join(runDir, "group"), "/etc/group",
-		"--chdir", config.WorkingDirectory,
+		"run", "--detach", "--rm", "--name", string(name), "--rootfs", "--read-only",
+		"--cap-drop=all", "--security-opt=no-new-privileges", "--security-opt=label=disable",
+		// Rootless Podman's namespace root maps to the invoking host user. A single
+		// UID/GID mapping suffices: the rootfs has no image or other user accounts.
+		"--userns=host", "--user=0:0", "--pid=private", "--ipc=private", "--uts=private",
+		"--network=pasta:--ipv4-only,-a,10.0.2.100,-n,24,-g,10.0.2.2,--no-map-gw",
+		"--dns=none", "--no-hosts", "--http-proxy=false", "--log-driver=none", "--init",
+		"--tmpfs=/tmp:rw,nosuid,nodev", "--tmpfs=/run:rw,nosuid,nodev",
+		"--workdir", config.WorkingDirectory,
 	}
-	for _, path := range []string{"/etc/hosts", "/etc/nsswitch.conf", "/etc/ssl/certs", "/etc/ca-certificates"} {
+	mounts := []struct {
+		source, target string
+		writable       bool
+	}{
+		{"/usr", "/usr", false}, {config.NodePrefix, "/opt/node", false},
+		{config.Project, "/workspace", true}, {config.Home, "/home/qwen", true},
+	}
+	for _, mount := range mounts {
+		args = append(args, "--mount", bindMount(mount.source, mount.target, mount.writable))
+	}
+	for _, path := range []string{"/etc/nsswitch.conf", "/etc/ssl/certs", "/etc/ca-certificates"} {
 		if _, err := os.Stat(path); err == nil {
-			args = append(args, "--ro-bind", path, path)
+			args = append(args, "--mount", bindMount(path, path, false))
 		} else if !os.IsNotExist(err) {
-			return SandboxPlan{}, err
+			return SandboxPlan{}, fmt.Errorf("Stat(%s): %w", path, err)
 		}
 	}
-	for _, name := range slices.Sorted(maps.Keys(config.Environment)) {
-		args = append(args, "--setenv", name, config.Environment[name])
+	for _, key := range slices.Sorted(maps.Keys(config.Environment)) {
+		args = append(args, "--env", key+"="+config.Environment[key])
 	}
 	var workload []string
 	switch invocation.Mode {
 	case ModeQwen:
 		workload = append([]string{"/opt/node/bin/qwen"}, invocation.Arguments...)
 	case ModeIsolationCheck:
-		// Check mode explicitly mounts the launcher read-only at a stable
-		// path so Go diagnostics work regardless of its installation location.
+		// The diagnostic binary is exposed only for the explicit isolation check.
 		if config.Launcher == "" {
-			return SandboxPlan{}, fmt.Errorf("isolation-check mode requires the launcher executable")
+			return SandboxPlan{}, fmt.Errorf("isolation-check requires the launcher executable")
 		}
-		args = append(args, "--ro-bind", config.Launcher, sandboxCheckerPath)
+		args = append(args, "--mount", bindMount(config.Launcher, sandboxCheckerPath, false))
 		workload = []string{sandboxCheckerPath, string(ModeIsolationProbe), filepath.Join(runDir, "host-canary")}
 	default:
 		return SandboxPlan{}, fmt.Errorf("unknown sandbox mode %q", invocation.Mode)
 	}
-	return SandboxPlan{BubblewrapArguments: args, Workload: workload}, nil
+	// Start only a trusted idle process. Qwen is executed after firewall setup,
+	// with the container's empty capability set rather than setup's privileges.
+	// sleep infinity is the container's main command (under --init), keeping it
+	// alive independently of Qwen. Qwen's lifetime is shorter than the container's:
+	// the supervisor installs the firewall before starting Qwen via podman exec,
+	// then removes the container after Qwen exits.
+	args = append(args, "--", filepath.Join(runDir, "rootfs"), "/usr/bin/sleep", "infinity")
+	return SandboxPlan{Name: name, RunArguments: args, Workload: workload}, nil
+}
+
+func bindMount(source, target string, writable bool) string {
+	var output strings.Builder
+	writer := csv.NewWriter(&output)
+	fields := []string{"type=bind", "src=" + source, "dst=" + target}
+	if !writable {
+		fields = append(fields, "ro=true")
+	}
+	// strings.Builder writes cannot fail. CSV preserves paths with commas/quotes.
+	_ = writer.Write(fields)
+	writer.Flush()
+	return strings.TrimSuffix(output.String(), "\n")
 }
 
 func writeRunFiles(runDir string) error {
-	files := map[string]string{
-		"resolv.conf": "nameserver 1.1.1.1\n",
-		"passwd":      "qwen:x:0:0:Qwen:/home/qwen:/usr/bin/bash\n", "group": "qwen:x:0:\n", "host-canary": "host-only\n",
-	}
-	for name, contents := range files {
-		if err := os.WriteFile(filepath.Join(runDir, name), []byte(contents), 0o600); err != nil {
-			return err
+	root := filepath.Join(runDir, "rootfs")
+	// This is a mount skeleton, not an OS image. Executables and libraries come
+	// from read-only host mounts; only the project and Qwen home persist writes.
+	for _, directory := range []string{"usr", "etc", "dev", "proc", "sys", "tmp", "run", "workspace", "home/qwen", "opt/node"} {
+		if err := os.MkdirAll(filepath.Join(root, directory), 0o700); err != nil {
+			return fmt.Errorf("MkdirAll(%s): %w", directory, err)
 		}
 	}
+	for name, target := range map[string]string{"bin": "usr/bin", "sbin": "usr/bin", "lib": "usr/lib", "lib64": "usr/lib"} {
+		if err := os.Symlink(target, filepath.Join(root, name)); err != nil {
+			return fmt.Errorf("Symlink(%s): %w", name, err)
+		}
+	}
+	files := map[string]string{"etc/resolv.conf": "nameserver 1.1.1.1\n", "etc/hosts": "127.0.0.1 localhost\n",
+		"etc/passwd": "qwen:x:0:0:Qwen:/home/qwen:/usr/bin/bash\n", "etc/group": "qwen:x:0:\n", "etc/hostname": "qwen-isolated\n"}
+	for name, contents := range files {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(contents), 0o600); err != nil {
+			return fmt.Errorf("WriteFile(%s): %w", name, err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(runDir, "host-canary"), []byte("host-only\n"), 0o600); err != nil {
+		return fmt.Errorf("WriteFile(host-canary): %w", err)
+	}
 	return nil
+}
+
+func interactiveArguments() []string {
+	args := []string{"--interactive"}
+	if _, err := unix.IoctlGetTermios(int(os.Stdin.Fd()), unix.TCGETS); err == nil {
+		if _, err := unix.IoctlGetTermios(int(os.Stdout.Fd()), unix.TCGETS); err == nil {
+			args = append(args, "--tty")
+		}
+	}
+	return args
 }

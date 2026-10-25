@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"net/netip"
 	"strings"
 
@@ -29,18 +30,36 @@ func newNetworkPolicy(host HostNetwork, extra []netip.Prefix, server utils.Optio
 	return NetworkPolicy{Blocked: collapsePrefixes(blocked), ModelServer: server}
 }
 
-func (policy NetworkPolicy) blocks(address netip.Addr) bool {
-	for _, prefix := range policy.Blocked {
-		if prefix.Contains(address) {
-			return true
-		}
+// Rules are installed only inside the managed Podman container, before Qwen.
+// No host firewall is modified. The model exception precedes destination blocks.
+func (policy NetworkPolicy) NFTables() string {
+	blocked := make([]string, len(policy.Blocked))
+	for i, prefix := range policy.Blocked {
+		blocked[i] = prefix.String()
 	}
-	return false
+	elements := ""
+	if len(blocked) > 0 {
+		elements = "elements = { " + strings.Join(blocked, ", ") + " }"
+	}
+	exception := ""
+	if model, present := policy.ModelServer.Get(); present {
+		exception = fmt.Sprintf("ip daddr %s tcp dport %d accept", model.Address, model.Port)
+	}
+	return fmt.Sprintf(`table inet qwen_egress {
+ set blocked4 { type ipv4_addr; flags interval; %s }
+ chain output {
+  type filter hook output priority 0; policy drop;
+  oifname "lo" accept
+  %s
+  ip daddr @blocked4 reject with icmpx type admin-prohibited
+  meta nfproto ipv4 accept
+ }
+ chain input {
+  type filter hook input priority 0; policy drop;
+  iifname "lo" accept
+  ct state established,related accept
+ }
+ chain forward { type filter hook forward priority 0; policy drop; }
 }
-
-func (policy NetworkPolicy) allowsTCP(address netip.Addr, port uint16) bool {
-	if model, present := policy.ModelServer.Get(); present && address == model.Address && port == model.Port {
-		return true
-	}
-	return address.Is4() && !policy.blocks(address)
+`, elements, exception)
 }

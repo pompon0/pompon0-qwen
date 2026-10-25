@@ -8,7 +8,8 @@ pkgbase = qwen-isolated-git
 	makedepends = git
 	makedepends = go>=2:1.27.3
 	depends = bash
-	depends = bubblewrap
+	depends = podman
+	depends = nftables
 	depends = coreutils
 	depends = glibc
 	depends = iproute2

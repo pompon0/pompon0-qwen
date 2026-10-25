@@ -8,7 +8,7 @@ arch=('x86_64')
 url='https://github.com/pompon0/pompon0-qwen'
 # Replace when the upstream project has a license.
 license=('unknown')
-depends=('bash' 'bubblewrap' 'coreutils' 'glibc' 'iproute2')
+depends=('bash' 'podman' 'nftables' 'coreutils' 'glibc' 'iproute2')
 # Arch's go package uses epoch 2. Do not silently download another toolchain.
 makedepends=('git' 'go>=2:1.27.3')
 optdepends=('nodejs: Node.js runtime, as an alternative to a user-managed nvm installation')

@@ -3,6 +3,7 @@ package main
 import (
 	"net/netip"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -77,9 +78,11 @@ func TestPolicyCoversHostAndRoutes(t *testing.T) {
 	if policyBlocks(policy, netip.MustParseAddr("1.1.1.1")) {
 		t.Fatal("public internet blocked")
 	}
-	if !policy.allowsTCP(netip.MustParseAddr("192.168.1.50"), 11434) || policy.allowsTCP(netip.MustParseAddr("192.168.1.50"), 8000) {
-		t.Fatal("model exception must allow only its selected TCP port")
+	rules := policy.NFTables()
+	if strings.Index(rules, "ip daddr 192.168.1.50 tcp dport 11434 accept") < 0 || strings.Index(rules, "ip daddr 192.168.1.50 tcp dport 11434 accept") > strings.Index(rules, "ip daddr @blocked4") {
+		t.Fatal("exact model exception must precede destination blocks")
 	}
+
 }
 
 func policyBlocks(policy NetworkPolicy, address netip.Addr) bool {

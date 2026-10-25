@@ -1,223 +1,83 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"strings"
 	"syscall"
 	"time"
-
-	"golang.org/x/sys/unix"
-
-	"github.com/pompon0/pompon0-qwen/utils"
-	"github.com/pompon0/pompon0-qwen/utils/scope"
 )
 
-const startupTimeout = 15 * time.Second
+const controlTimeout = 30 * time.Second
 const shutdownTimeout = 3 * time.Second
 
-var helperEnvironment = []string{"PATH=/usr/bin:/bin", "LANG=C.UTF-8"}
-
-// The supervisor's scope owns each process waiter. Closing done publishes
-// err to observers; the supervisor stops all children and joins every waiter
-// before returning, including on startup failure and cancellation.
-type managedProcess struct {
-	cmd  *exec.Cmd
-	done chan struct{}
-	err  error
-}
-
-func startProcess(s scope.Scope, cmd *exec.Cmd) (*managedProcess, error) {
-	if err := cmd.Start(); err != nil {
-		return nil, err
-	}
-	p := &managedProcess{cmd: cmd, done: make(chan struct{})}
-	s.SpawnBg(func() error {
-		p.err = cmd.Wait()
-		// Normalize at the process boundary so callers need no knowledge of
-		// exec.ExitError or the kernel's separate signal termination status.
-		if exited, ok := errors.AsType[*exec.ExitError](p.err); ok {
-			if status, ok := exited.Sys().(syscall.WaitStatus); ok && status.Signaled() {
-				p.err = codeError(128 + int(status.Signal()))
-			} else {
-				p.err = codeError(exited.ExitCode())
-			}
-		}
-		close(p.done)
-		// Record completion without canceling the owner prematurely. Supervision
-		// decides whether a process exit is expected using p.done and p.err.
-		return nil
-	})
-	return p, nil
-}
-
-func (p *managedProcess) exited() bool {
-	select {
-	case <-p.done:
-		return true
-	default:
-		return false
-	}
-}
-
-func (p *managedProcess) stop() {
-	if p.exited() {
-		return
-	}
-	_ = p.cmd.Process.Signal(syscall.SIGTERM)
-	err := utils.WithTimeout(context.Background(), shutdownTimeout, func(ctx context.Context) error {
-		_, _, err := utils.RecvOrClosed(ctx, p.done)
-		return err
-	})
+// Podman owns namespaces, networking, mount setup, and container processes. The
+// launcher only orders its commands: trusted idle container, firewall, then Qwen.
+func supervise(ctx context.Context, tools Tools, plan SandboxPlan, policy NetworkPolicy) (err error) {
+	rootless, err := podmanControl(ctx, tools, strings.NewReader(""), "info", "--format", "{{.Host.Security.Rootless}}")
 	if err != nil {
-		_ = p.cmd.Process.Kill()
-		_, _, _ = utils.RecvOrClosed(context.Background(), p.done)
+		return err
 	}
-}
-
-func awaitReady(ctx context.Context, ready *os.File, process *managedProcess, description string, timeout time.Duration) error {
-	return scope.Run(ctx, func(ctx context.Context, s scope.Scope) error {
-		result := make(chan error, 1)
-		s.SpawnBg(func() error {
-			var value [1]byte
-			_, err := io.ReadFull(ready, value[:])
-			if err == nil && value[0] != '1' {
-				err = fmt.Errorf("invalid readiness byte %q", value[0])
-			}
-			result <- err
-			return nil
-		})
-		// Closing first unblocks ReadFull on every early return. The scope
-		// joins the reader before its owning function releases resources.
-		defer ready.Close()
-		timer := time.NewTimer(timeout)
-		defer timer.Stop()
-		select {
-		case err := <-result:
-			if err != nil {
-				return fmt.Errorf("%s exited before becoming ready: %w", description, err)
-			}
-			return nil
-		case <-process.done:
-			return fmt.Errorf("%s exited before becoming ready (%v)", description, process.cmd.ProcessState)
-		case <-timer.C:
-			return fmt.Errorf("%s startup timed out", description)
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-	})
-}
-
-// The child enters fresh user/network namespaces before the Go helper starts.
-// Map the invoking user to namespace root, without host root privileges. Denying
-// setgroups is required for an unprivileged process to install its GID mapping.
-func networkNamespaceAttributes() *syscall.SysProcAttr {
-	return &syscall.SysProcAttr{
-		Cloneflags:                 unix.CLONE_NEWUSER | unix.CLONE_NEWNET,
-		UidMappings:                []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Geteuid(), Size: 1}},
-		GidMappings:                []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getegid(), Size: 1}},
-		GidMappingsEnableSetgroups: false,
+	if rootless != "true" {
+		return errors.New("Podman must use a local rootless engine")
 	}
-}
-
-// The setup helper waits until the TAP interface and filtered network stack are
-// ready before execing Bubblewrap. Qwen never runs during the privileged setup phase.
-func supervise(ctx context.Context, tools Tools, plan SandboxPlan, policy NetworkPolicy) error {
-	return scope.Run(ctx, func(ctx context.Context, s scope.Scope) error {
-		return superviseInScope(ctx, s, tools, plan, policy)
-	})
-}
-
-func superviseInScope(ctx context.Context, s scope.Scope, tools Tools, plan SandboxPlan, policy NetworkPolicy) error {
-	var opened []*os.File
+	// Cleanup also covers partial create/setup failures. Killing an attached
+	// Podman CLI alone does not guarantee that its container has stopped.
 	defer func() {
-		for _, file := range opened {
-			_ = file.Close()
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), controlTimeout)
+		defer cancel()
+		if _, cleanupErr := podmanControl(cleanupCtx, tools, strings.NewReader(""), "rm", "--force", "--ignore", "--time", "3", string(plan.Name)); cleanupErr != nil {
+			err = errors.Join(err, fmt.Errorf("remove sandbox container: %w", cleanupErr))
 		}
 	}()
-	pipe := func() (*os.File, *os.File, error) {
-		r, w, err := os.Pipe()
-		if err == nil {
-			opened = append(opened, r, w)
-		}
-		return r, w, err
-	}
-	readyR, readyW, err := pipe()
-	if err != nil {
+	if _, err := podmanControl(ctx, tools, strings.NewReader(""), plan.RunArguments...); err != nil {
 		return err
 	}
-	startR, startW, err := pipe()
-	if err != nil {
-		return err
+	// Only this trusted host executable receives setup privileges, before any
+	// Qwen/project code runs. Normal exec inherits the container's dropped caps.
+	if _, err := podmanControl(ctx, tools, strings.NewReader(policy.NFTables()), "exec", "--privileged", "--user=0:0", "--interactive", string(plan.Name), tools.NFT, "--file", "-"); err != nil {
+		return fmt.Errorf("install sandbox firewall: %w", err)
 	}
-	sockets, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_DGRAM|unix.SOCK_CLOEXEC, 0)
-	if err != nil {
-		return fmt.Errorf("TAP socketpair: %w", err)
-	}
-	tapReceiver := os.NewFile(uintptr(sockets[0]), "TAP receiver")
-	tapSender := os.NewFile(uintptr(sockets[1]), "TAP sender")
-	opened = append(opened, tapReceiver, tapSender)
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	launcher, err := os.Executable()
-	if err != nil {
-		return fmt.Errorf("locate setup helper: %w", err)
-	}
-	args := []string{string(ModeSetup), tools.Bubblewrap}
-	args = append(args, plan.BubblewrapArguments...)
-	args = append(args, "--")
+	args := append([]string{"--remote=false", "exec"}, interactiveArguments()...)
+	args = append(args, string(plan.Name))
 	args = append(args, plan.Workload...)
-	cmd := exec.Command(launcher, args...)
-	cmd.SysProcAttr = networkNamespaceAttributes()
-	cmd.Env = helperEnvironment
+	cmd := exec.CommandContext(ctx, tools.Podman, args...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
-	// ExtraFiles maps readiness, startup permission, and TAP handoff to 3, 4, 5.
-	cmd.ExtraFiles = []*os.File{readyW, startR, tapSender}
-	child, err := startProcess(s, cmd)
-	if err != nil {
-		return fmt.Errorf("start namespace setup: %w", err)
-	}
-	defer child.stop()
-	_ = readyW.Close()
-	_ = startR.Close()
-	_ = tapSender.Close()
-	if err := awaitReady(ctx, readyR, child, "namespace/TAP setup", startupTimeout); err != nil {
-		return err
-	}
-	tap, err := receiveTAP(tapReceiver)
-	if err != nil {
-		return err
-	}
-	opened = append(opened, tap)
-	_ = tapReceiver.Close()
-	network, err := newUserNetwork(policy)
-	if err != nil {
-		return err
-	}
-
-	networkCtx, cancelNetwork := context.WithCancel(ctx)
-	defer cancelNetwork()
-	s.SpawnBg(func() error {
-		defer network.Close()
-		err := runUserNetwork(networkCtx, network, tap)
-		if err != nil && child.exited() {
-			return nil
+	// Allow graceful shutdown on cancellation, then force termination after the
+	// grace period. Run waits for the CLI to be reaped before container cleanup.
+	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
+	cmd.WaitDelay = shutdownTimeout
+	if err := cmd.Run(); err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
 		}
-		return err
-	})
-	if child.exited() {
-		return fmt.Errorf("setup helper exited unexpectedly")
+		// Normalize at the process boundary so callers need no knowledge of
+		// exec.ExitError or the kernel's separate signal termination status.
+		if exited, ok := errors.AsType[*exec.ExitError](err); ok {
+			if status, ok := exited.Sys().(syscall.WaitStatus); ok && status.Signaled() {
+				return codeError(128 + int(status.Signal()))
+			}
+			return codeError(exited.ExitCode())
+		}
+		return fmt.Errorf("run Podman workload: %w", err)
 	}
-	if _, err := io.WriteString(startW, "go\n"); err != nil {
-		return fmt.Errorf("release sandbox startup gate: %w", err)
+	return nil
+}
+
+func podmanControl(ctx context.Context, tools Tools, input io.Reader, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, controlTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, tools.Podman, append([]string{"--remote=false"}, args...)...)
+	cmd.Stdin = input
+	var output, diagnostics bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &output, &diagnostics
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("podman %s: %w (%s)", args[0], err, strings.TrimSpace(diagnostics.String()))
 	}
-	_ = startW.Close()
-	if _, _, err := utils.RecvOrClosed(ctx, child.done); err != nil {
-		return err
-	}
-	return child.err
+	return strings.TrimSpace(output.String()), nil
 }

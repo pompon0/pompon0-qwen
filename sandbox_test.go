@@ -1,47 +1,80 @@
 package main
 
 import (
+	"encoding/csv"
+	"os"
+	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 )
 
-func TestArgsAndWorkload(t *testing.T) {
-	c := Config{Project: "/host/project", Home: "/host/state/home", NodePrefix: "/host/node", WorkingDirectory: "/workspace/sub", Launcher: "/host/launcher", Environment: map[string]string{"HOME": "/home/qwen"}}
-	for _, test := range []struct{ args, workload []string }{
-		{nil, []string{"/opt/node/bin/qwen"}},
-		{[]string{"--model", "a b"}, []string{"/opt/node/bin/qwen", "--model", "a b"}},
-	} {
-		invocation := Args{Mode: ModeQwen, Arguments: test.args}
-		plan, err := buildSandbox(c, invocation, "/run-dir")
+func TestPodmanPlan(t *testing.T) {
+	config := Config{Project: "/host/project, with spaces", Home: "/host/home", NodePrefix: "/host/node", WorkingDirectory: "/workspace/sub", Launcher: "/host/launcher", Environment: map[string]string{"HOME": "/home/qwen", "PATH": "/opt/node/bin:/usr/bin"}}
+	for _, mode := range []Mode{ModeQwen, ModeIsolationCheck} {
+		plan, err := buildSandbox(config, Args{Mode: mode, Arguments: []string{"--model", "local"}}, "/run-dir")
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !slices.Equal(plan.Workload, test.workload) {
-			t.Errorf("workload: %v", plan.Workload)
-		}
-		if containsSequence(plan.BubblewrapArguments, []string{"--ro-bind", c.Launcher, sandboxCheckerPath}) {
-			t.Fatal("launcher should only be exposed in isolation-check mode")
-		}
-		for _, sequence := range [][]string{
-			{"--cap-drop", "ALL", "--clearenv"}, {"--unshare-user", "--disable-userns", "--share-net"},
-			{"--bind", "/host/project", "/workspace"}, {"--bind", "/host/state/home", "/home/qwen"},
-			{"--ro-bind", "/host/node", "/opt/node"}, {"--chdir", "/workspace/sub"},
-		} {
-			if !containsSequence(plan.BubblewrapArguments, sequence) {
-				t.Errorf("missing isolation arguments %v", sequence)
+		for _, flag := range []string{"--rootfs", "--read-only", "--cap-drop=all", "--security-opt=no-new-privileges", "--userns=host", "--http-proxy=false"} {
+			if !slices.Contains(plan.RunArguments, flag) {
+				t.Errorf("missing %s", flag)
 			}
 		}
+		if !containsSequence(plan.RunArguments, []string{"--", "/run-dir/rootfs", "/usr/bin/sleep", "infinity"}) {
+			t.Fatal("container must start only trusted sleep")
+		}
+		mounts := map[string][]string{}
+		for i, arg := range plan.RunArguments {
+			if arg != "--mount" {
+				continue
+			}
+			fields, err := csv.NewReader(strings.NewReader(plan.RunArguments[i+1])).Read()
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, field := range fields {
+				if strings.HasPrefix(field, "dst=") {
+					mounts[strings.TrimPrefix(field, "dst=")] = fields
+				}
+			}
+		}
+		if !slices.Contains(mounts["/workspace"], "src="+config.Project) || slices.Contains(mounts["/workspace"], "ro=true") {
+			t.Fatal("project must remain writable with intact path")
+		}
+		for _, target := range []string{"/usr", "/opt/node"} {
+			if !slices.Contains(mounts[target], "ro=true") {
+				t.Errorf("%s must be read-only", target)
+			}
+		}
+		if mode == ModeQwen {
+			if !slices.Equal(plan.Workload, []string{"/opt/node/bin/qwen", "--model", "local"}) {
+				t.Fatal(plan.Workload)
+			}
+			if _, present := mounts[sandboxCheckerPath]; present {
+				t.Fatal("diagnostic executable leaked into normal sandbox")
+			}
+		} else if !slices.Contains(mounts[sandboxCheckerPath], "ro=true") {
+			t.Fatal("diagnostic executable must be mounted read-only")
+		}
 	}
-	invocation := Args{Mode: ModeIsolationCheck}
-	plan, err := buildSandbox(c, invocation, "/run-dir")
-	if err != nil {
+}
+
+func TestMinimalRootfs(t *testing.T) {
+	directory := t.TempDir()
+	if err := writeRunFiles(directory); err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(plan.Workload, []string{sandboxCheckerPath, string(ModeIsolationProbe), "/run-dir/host-canary"}) {
-		t.Fatalf("check should execute the Go helper: %v", plan.Workload)
+	root := filepath.Join(directory, "rootfs")
+	for _, name := range []string{"bin", "lib", "lib64"} {
+		target, err := os.Readlink(filepath.Join(root, name))
+		if err != nil || !strings.HasPrefix(target, "usr/") {
+			t.Fatalf("%s: %q, %v", name, target, err)
+		}
 	}
-	if !containsSequence(plan.BubblewrapArguments, []string{"--ro-bind", c.Launcher, sandboxCheckerPath}) {
-		t.Fatal("check executable is not mounted read-only")
+	entries, err := os.ReadDir(filepath.Join(root, "usr"))
+	if err != nil || len(entries) != 0 {
+		t.Fatal("rootfs must not contain an OS installation")
 	}
 }
 

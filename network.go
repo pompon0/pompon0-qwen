@@ -15,6 +15,8 @@ import (
 	"github.com/pompon0/pompon0-qwen/utils"
 )
 
+const networkSubnet = "10.0.2.0/24"
+
 type ModelServer struct {
 	Address netip.Addr
 	Port    uint16

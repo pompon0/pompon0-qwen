@@ -8,8 +8,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-
-	"github.com/spf13/cobra"
 )
 
 func TestLauncherParsingPreservesForwardedArguments(t *testing.T) {
@@ -49,7 +47,7 @@ func TestLauncherParsingPreservesForwardedArguments(t *testing.T) {
 }
 
 func TestRejectInvalidLauncherModes(t *testing.T) {
-	for _, args := range [][]string{{""}, {"shell"}, {"invalid"}, {"isolation-check", "extra"}, {string(ModeSetup)}, {string(ModeIsolationProbe)}, {string(ModeUserNSProbe), "extra"}} {
+	for _, args := range [][]string{{""}, {"shell"}, {"invalid"}, {"isolation-check", "extra"}, {string(ModeIsolationProbe)}, {string(ModeUserNSProbe), "extra"}} {
 		command := newCommand(args, func(context.Context, Args) error {
 			t.Fatal("invalid command reached sandbox runner")
 			return nil
@@ -105,34 +103,8 @@ func TestCommandPropagatesRunnerError(t *testing.T) {
 	}
 }
 
-func TestSetupPreservesSandboxArguments(t *testing.T) {
-	arguments := []string{"/bwrap", "--share-net", "--", "/qwen", "--help"}
-	command := newCommand(slices.Concat([]string{string(ModeSetup)}, arguments), func(context.Context, Args) error {
-		t.Fatal("setup reached sandbox runner")
-		return nil
-	})
-	called := false
-	for _, child := range command.Commands() {
-		if child.Name() == string(ModeSetup) {
-			child.RunE = func(cmd *cobra.Command, args []string) error {
-				called = true
-				if !slices.Equal(args, arguments) {
-					t.Errorf("sandbox arguments changed: %v", args)
-				}
-				return nil
-			}
-		}
-	}
-	if err := command.ExecuteContext(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	if !called {
-		t.Fatal("setup handler was not called")
-	}
-}
-
 func TestHelpersParseFlags(t *testing.T) {
-	for _, mode := range []Mode{ModeSetup, ModeIsolationProbe, ModeUserNSProbe} {
+	for _, mode := range []Mode{ModeIsolationProbe, ModeUserNSProbe} {
 		t.Run(string(mode), func(t *testing.T) {
 			command := newCommand([]string{string(mode), "--unknown"}, runSandbox)
 			if err := command.ExecuteContext(t.Context()); err == nil || !strings.Contains(err.Error(), "unknown flag") {

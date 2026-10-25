@@ -18,6 +18,8 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+const sandboxCheckerPath = "/opt/qwen-isolated-check"
+
 type capabilityKind string
 type capabilityMask uint64
 

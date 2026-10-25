@@ -32,8 +32,8 @@ func main() {
 		signals := make(chan os.Signal, 1)
 		// Handle SIGTERM so cancellation can stop and reap children, join scoped
 		// tasks, and remove temporary files before exiting. Linux does not normally
-		// kill children when a parent exits: Bubblewrap's --die-with-parent only
-		// applies after setup execs it, leaving the namespace setup phase unprotected.
+		// kill children when a parent exits. Podman's container also needs explicit
+		// removal if its attached CLI exits before the workload does.
 		signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
 		s.SpawnBg(func() error {
 			sig, err := utils.Recv(ctx, signals)

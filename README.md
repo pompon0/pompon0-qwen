@@ -1,9 +1,10 @@
 # qwen-isolated
 
 A rootless Linux launcher for Qwen Code.
-The launcher, trusted setup helper, and isolation checks are implemented in Go.
-The executable uses `utils/scope.Scope` for structured concurrency and
-`golang.org/x/sys/unix` for Linux system calls.
+It instruments rootless Podman using a minimal mount skeleton rather than an OS
+image. Programs and libraries come from read-only host mounts. Podman and pasta
+own process isolation, mounts, and networking; the launcher installs a destination
+policy before executing Qwen.
 
 ## Arch Linux package
 
@@ -14,8 +15,9 @@ repository is public. It is not published to the AUR yet.
 The package builds from source with Go 1.27.3 or later and installs the launcher
 at `/usr/bin/qwen-isolated`. Pacman manages its sandbox dependencies. Qwen Code
 must already be installed in the Node prefix selected by your active `node`,
-including when using nvm. Run as your ordinary user; user namespaces must be
-enabled and the host must expose the Linux TUN/TAP device at `/dev/net/tun`.
+including when using nvm. Run as your ordinary user with working rootless Podman
+and pasta networking. A single UID/GID mapping is sufficient for this one-user
+rootfs; subordinate ranges remain useful for normal multi-user container images.
 
 ## Run in a Git repository
 
@@ -119,14 +121,11 @@ Relaunch after LAN/VPN route changes.
 | `main.go` | CLI entry point, signals, and exit status |
 | `cli.go` | Cobra commands, argument validation, model overrides, and help |
 | `config.go` | Git repository discovery, tool discovery, state paths, environment |
-| `user_network.go` | Namespace TAP setup, descriptor handoff, embedded network stack |
-| `network.go` | Typed IPv4 parsing, host network discovery, prefix normalization |
+| `network.go` | Host IPv4 addresses, connected routes, and prefix normalization |
 | `qwen_config.go` | Qwen user settings and selected model endpoint resolution |
-| `policy.go` | Destination policy and model-server TCP exception |
-| `netstack.go` | gVisor stack, destination filtering, and host connection forwarding |
-| `sandbox.go` | Invocation modes, mounts, workload, temporary configuration |
-| `supervisor.go` | Startup handshake, child processes, timeouts, cleanup |
-| `helpers.go` | Private Go helper modes, TAP handoff, and workload startup gate |
+| `policy.go` | nftables destination policy and exact model-server TCP exception |
+| `sandbox.go` | Minimal rootfs, explicit host mounts, and Podman command arguments |
+| `supervisor.go` | Podman setup, workload execution, cancellation, and container cleanup |
 | `check.go` | Native Go isolation diagnostics executed inside the sandbox |
 | `packaging/aur/` | AUR recipe, metadata, and publishing workflow |
 
@@ -138,35 +137,36 @@ or when the first argument starts with `-`. Use an explicit `qwen` mode before a
 positional Qwen prompt. The remaining arguments are
 forwarded unchanged to Qwen. `--help` and `-h` remain Qwen flags; use
 `help` for launcher help.
-The launcher re-executes itself for trusted setup and mounts itself read-only
-inside the sandbox only for `isolation-check`.
-Configuration, policy, sandbox plans, and process supervision are
-separate so each can be changed without redesigning the rest of the launcher.
+The launcher is mounted read-only inside the sandbox only for `isolation-check`.
+There is no custom namespace/TAP helper or embedded network stack.
 
 ## Isolation boundary
 
-Go starts the trusted setup helper directly in private user/network namespaces,
-mapping the invoking user to namespace root. No external `unshare` command is
-needed. The helper creates the TAP interface there.
-The supervisor owns the gVisor network stack, installs destination filters, and
-connects it to TAP before allowing Bubblewrap to start Qwen. Filtering uses
-public components from `gvisor-tap-vsock`; no fork, network subprocess, nft command,
-or kernel firewall rules are needed. gVisor parses packets and reassembles IPv4
-fragments; the selected model's TCP port is checked after reassembly.
+The launcher runs a rootless Podman container with `--rootfs` pointing to a
+fresh mount skeleton. It contains directory mount points, symlinks, and generated
+`/etc` files, with no downloaded image or OS installation. Host `/usr` and the
+active Node prefix are mounted read-only; project and per-repository home mounts
+remain writable. Podman supplies private PID/IPC/UTS/network namespaces, an init
+process, a read-only root filesystem, and its standard seccomp restrictions.
+All workload capabilities are dropped and privilege gains are disabled.
 
-Bubblewrap starts the workload in a child user namespace, with all capabilities
-dropped and further user namespaces disabled. The workload cannot modify the
-supervisor's filters. Setup failures abort startup; packet processing failures
-terminate the sandbox. No host firewall changes or host root privileges are
-required. The TAP reader and gVisor protocol workers are stopped and joined on
-return. Some library forwarding tasks, host sockets, and the connection-tracking
-reaper can remain until supervisor exit; this limitation is documented in code.
+Initially only a trusted `sleep` process runs. A trusted `podman exec --privileged`
+invocation loads nftables rules inside the container's network namespace, then
+Qwen is started by an ordinary `podman exec` with no capabilities. This setup
+privilege belongs to the rootless namespace and never requires host root. Failure
+to install the policy aborts startup. The policy permits public IPv4 and one exact
+model-server TCP exception; private, host, directly connected, extra denied, and
+IPv6 destinations remain blocked. No host firewall rules are changed.
+
+The launcher always removes its named container after the workload exits, fails,
+or is canceled. Podman owns the pasta/runtime processes and namespace teardown.
 
 The project and sandbox home are writable. `/usr`, the Node installation, and
 selected system configuration are read-only. Temporary mounts are ephemeral.
 Qwen can delete project files and transmit data to allowed internet destinations.
-This is destination filtering, not protection against internet relays, a VM,
-a resource quota, or a syscall allowlist. Remote MCP services have their own scope.
+Allowed internet services can relay traffic elsewhere. Podman applies its
+standard seccomp profile; the launcher sets no resource quotas. Remote MCP
+services have their own scope.
 
 ## Validation
 
@@ -176,5 +176,13 @@ go vet ./...
 ```
 
 Tests cover policy, project selection, environment filtering, sandbox plans,
-and process startup/failure handling. For actual kernel/network isolation,
+and Podman startup/failure/cancellation handling. For actual kernel/network isolation,
 run the installed executable's `isolation-check` mode on a configured Linux host.
+
+A live integration test creates and removes a rootless container using local test
+servers, checks filesystem/privilege isolation, and verifies the model TCP-port
+exception without downloading an image:
+
+```sh
+POMPON_PODMAN_INTEGRATION=1 go test -run '^TestPodmanIntegration$' -v .
+```

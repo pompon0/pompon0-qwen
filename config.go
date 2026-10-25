@@ -14,7 +14,7 @@ import (
 
 // Tools are resolved on the host before entering any namespace.
 type Tools struct {
-	Bubblewrap, IP string
+	Podman, NFT, IP string
 }
 
 type Config struct {
@@ -81,6 +81,7 @@ func discoverConfig() (Config, error) {
 	if err != nil || !info.Mode().IsRegular() {
 		return c, fmt.Errorf("Qwen must be a regular file within the Node installation")
 	}
+	// Retain the legacy state path so existing Qwen settings survive migrations.
 	c.State = filepath.Join(home, ".local/state/qwen-bwrap", fmt.Sprintf("%x", sha256.Sum256([]byte(c.Project))))
 	if err := os.MkdirAll(c.State, 0o700); err != nil {
 		return c, err
@@ -123,10 +124,11 @@ func discoverConfig() (Config, error) {
 
 func discoverTools() (Tools, error) {
 	t := Tools{
-		Bubblewrap: "/usr/bin/bwrap",
-		IP:         "/usr/bin/ip",
+		Podman: "/usr/bin/podman",
+		NFT:    "/usr/bin/nft",
+		IP:     "/usr/bin/ip",
 	}
-	for _, path := range []string{t.Bubblewrap, t.IP} {
+	for _, path := range []string{t.Podman, t.NFT, t.IP} {
 		info, err := os.Stat(path)
 		if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
 			return Tools{}, fmt.Errorf("missing executable %s; see help", path)
