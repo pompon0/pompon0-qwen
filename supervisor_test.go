@@ -18,7 +18,7 @@ import (
 
 // Fake host tools exercise the real pipe/exec handshake without namespaces,
 // network privileges, Qwen, or access to any host project.
-func fakeTools(t *testing.T, nftFails, slirpFails bool) (Tools, string) {
+func fakeTools(t *testing.T, nftFails bool) (Tools, string) {
 	t.Helper()
 	dir := t.TempDir()
 	write := func(name, body string) string {
@@ -29,7 +29,7 @@ func fakeTools(t *testing.T, nftFails, slirpFails bool) (Tools, string) {
 		}
 		return path
 	}
-	tools := Tools{Bash: "/bin/bash"}
+	var tools Tools
 	tools.Unshare = write("unshare", `while [[ $1 != -- ]]; do shift; done; shift; exec "$@"`)
 	tools.Bubblewrap = write("bwrap", `while [[ $1 != -- ]]; do shift; done; shift; exec "$@"`)
 	nftBody := "printf ready > '" + filepath.Join(dir, "firewall-ready") + "'\n"
@@ -37,18 +37,11 @@ func fakeTools(t *testing.T, nftFails, slirpFails bool) (Tools, string) {
 		nftBody = "exit 7\n"
 	}
 	tools.NFT = write("nft", nftBody)
-	slirpBody := "echo $$ > '" + filepath.Join(dir, "slirp.pid") + "'\n[[ -f '" + filepath.Join(dir, "firewall-ready") + "' ]]\nprintf 1 >&3\nexec 3>&-\n"
-	if slirpFails {
-		slirpBody += "while [[ ! -f '" + filepath.Join(dir, "workload-started") + "' ]]; do sleep 0.01; done\necho 'simulated network failure' >&2\nexit 8\n"
-	} else {
-		slirpBody += "read -r value <&4 || true\n"
-	}
-	tools.Slirp = write("slirp", slirpBody)
 	return tools, dir
 }
 
 func TestSupervisorSuccessfulHandshakeAndExitStatus(t *testing.T) {
-	tools, dir := fakeTools(t, false, false)
+	tools, dir := fakeTools(t, false)
 	plan := SandboxPlan{Workload: []string{"/bin/bash", "-c", "test -f '" + filepath.Join(dir, "firewall-ready") + "'; exit 23"}}
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
@@ -93,7 +86,7 @@ func TestProcessWaitNormalizesExitStatus(t *testing.T) {
 }
 
 func TestSupervisorFirewallFailureDoesNotLaunchWorkload(t *testing.T) {
-	tools, dir := fakeTools(t, true, false)
+	tools, dir := fakeTools(t, true)
 	marker := filepath.Join(dir, "workload-started")
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
@@ -107,17 +100,20 @@ func TestSupervisorFirewallFailureDoesNotLaunchWorkload(t *testing.T) {
 }
 
 func TestSupervisorNetworkFailureStopsWorkload(t *testing.T) {
-	tools, dir := fakeTools(t, false, true)
+	tools, dir := fakeTools(t, false)
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
-	err := supervise(ctx, tools, SandboxPlan{Workload: []string{"/bin/bash", "-c", "touch '" + filepath.Join(dir, "workload-started") + "'; exec sleep 30"}}, dir)
-	if err == nil || !strings.Contains(err.Error(), "slirp4netns stopped") {
+	if err := os.WriteFile(tools.Unshare, []byte("#!/bin/bash\nset -eu\nexport POMPON_TEST_FAIL_NETWORK=1\nwhile [[ $1 != -- ]]; do shift; done; shift; exec \"$@\"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	err := supervise(ctx, tools, SandboxPlan{Workload: []string{"/bin/sleep", "30"}}, dir)
+	if err == nil || !strings.Contains(err.Error(), "embedded network") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
-func TestSupervisorCancellationReapsBothChildren(t *testing.T) {
-	tools, dir := fakeTools(t, false, false)
+func TestSupervisorCancellationReapsChild(t *testing.T) {
+	tools, dir := fakeTools(t, false)
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 	pidPath := filepath.Join(dir, "workload.pid")
@@ -138,7 +134,7 @@ func TestSupervisorCancellationReapsBothChildren(t *testing.T) {
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected cancellation, got %v", err)
 	}
-	for _, path := range []string{pidPath, filepath.Join(dir, "slirp.pid")} {
+	for _, path := range []string{pidPath} {
 		data, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatal(err)
@@ -151,6 +147,7 @@ func TestSupervisorCancellationReapsBothChildren(t *testing.T) {
 			t.Fatalf("child %d was not reaped before supervisor returned: %v", pid, err)
 		}
 	}
+
 }
 
 func TestAwaitReadyTimeoutAndCancellation(t *testing.T) {

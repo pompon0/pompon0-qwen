@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"maps"
 	"os"
@@ -8,42 +9,41 @@ import (
 	"slices"
 )
 
-type Mode uint8
-
-const (
-	ModeQwen Mode = iota
-	ModeShell
-	ModeCheck
-)
-
-type Invocation struct {
-	Mode      Mode
-	Arguments []string
-}
-
-func parseInvocation(arguments []string) (Invocation, error) {
-	invocation := Invocation{Mode: ModeQwen, Arguments: slices.Clone(arguments)}
-	if len(arguments) == 0 {
-		return invocation, nil
-	}
-	switch arguments[0] {
-	case "--shell":
-		invocation.Mode, invocation.Arguments = ModeShell, arguments[1:]
-	case "--check":
-		if len(arguments) != 1 {
-			return Invocation{}, fmt.Errorf("--check does not accept arguments")
-		}
-		invocation.Mode, invocation.Arguments = ModeCheck, nil
-	}
-	return invocation, nil
-}
-
 type SandboxPlan struct {
 	BubblewrapArguments []string
 	Workload            []string
 }
 
-func buildSandbox(config Config, invocation Invocation, runDir string) (SandboxPlan, error) {
+func runSandbox(ctx context.Context, invocation Args) error {
+	config, err := discoverConfig()
+	if err != nil {
+		return err
+	}
+	config.ModelServer, err = configuredModelServer(config.Home, config.Environment, invocation)
+	if err != nil {
+		return err
+	}
+	network, err := discoverNetwork(ctx, config.Tools.IP)
+	if err != nil {
+		return err
+	}
+	policy := newNetworkPolicy(network, config.ExtraDenied, config.ModelServer)
+	runDir, err := os.MkdirTemp(config.State, "run-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(runDir)
+	if err := writeRunFiles(runDir, policy); err != nil {
+		return err
+	}
+	plan, err := buildSandbox(config, invocation, runDir)
+	if err != nil {
+		return err
+	}
+	return supervise(ctx, config.Tools, plan, runDir)
+}
+
+func buildSandbox(config Config, invocation Args, runDir string) (SandboxPlan, error) {
 	args := []string{
 		"--unshare-all", "--unshare-user", "--disable-userns", "--share-net",
 		"--die-with-parent", "--new-session", "--cap-drop", "ALL", "--clearenv",
@@ -72,18 +72,16 @@ func buildSandbox(config Config, invocation Invocation, runDir string) (SandboxP
 	switch invocation.Mode {
 	case ModeQwen:
 		workload = append([]string{"/opt/node/bin/qwen"}, invocation.Arguments...)
-	case ModeShell:
-		workload = append([]string{"/usr/bin/bash", "--noprofile", "--norc"}, invocation.Arguments...)
-	case ModeCheck:
+	case ModeIsolationCheck:
 		// Check mode explicitly mounts the launcher read-only at a stable
 		// path so Go diagnostics work regardless of its installation location.
 		if config.Launcher == "" {
-			return SandboxPlan{}, fmt.Errorf("check mode requires the launcher executable")
+			return SandboxPlan{}, fmt.Errorf("isolation-check mode requires the launcher executable")
 		}
 		args = append(args, "--ro-bind", config.Launcher, sandboxCheckerPath)
-		workload = []string{sandboxCheckerPath, string(helperCheck), filepath.Join(runDir, "host-canary")}
+		workload = []string{sandboxCheckerPath, string(ModeIsolationProbe), filepath.Join(runDir, "host-canary")}
 	default:
-		return SandboxPlan{}, fmt.Errorf("unknown sandbox mode %d", invocation.Mode)
+		return SandboxPlan{}, fmt.Errorf("unknown sandbox mode %q", invocation.Mode)
 	}
 	return SandboxPlan{BubblewrapArguments: args, Workload: workload}, nil
 }

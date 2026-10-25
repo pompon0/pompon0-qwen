@@ -44,7 +44,7 @@ type modelOverrides struct {
 // Read the documented per-repository user configuration, never the host's
 // ordinary ~/.qwen or project-supplied settings. No Qwen/project code executes
 // while the supervisor still has authority over the firewall.
-func configuredModelServer(home string, environment map[string]string, invocation Invocation) (utils.Option[ModelServer], error) {
+func configuredModelServer(home string, environment map[string]string, invocation Args) (utils.Option[ModelServer], error) {
 	path := filepath.Join(home, ".qwen/settings.json")
 	var settings qwenSettings
 	// Qwen can write its own home. Do not let a symlink there make the trusted
@@ -73,7 +73,7 @@ func configuredModelServer(home string, environment map[string]string, invocatio
 	}
 	server, err := modelServerFromURL(endpoint)
 	if err != nil {
-		return utils.None[ModelServer](), fmt.Errorf("Qwen model endpoint: %w (use --shell to edit settings)", err)
+		return utils.None[ModelServer](), fmt.Errorf("Qwen model endpoint: %w (edit the sandbox user settings on the host)", err)
 	}
 	return server, nil
 }
@@ -81,13 +81,17 @@ func configuredModelServer(home string, environment map[string]string, invocatio
 // Endpoint resolution intentionally stays separate from firewall rendering.
 // Model provider metadata wins over CLI/env/legacy endpoint fallbacks, following
 // Qwen's documented resolution layers. Only one selected route grants access.
-func (settings qwenSettings) modelEndpoint(environment map[string]string, invocation Invocation) (string, error) {
+func (settings qwenSettings) modelEndpoint(environment map[string]string, invocation Args) (string, error) {
 	env := make(map[string]string, len(settings.Env)+len(environment))
 	maps.Copy(env, settings.Env)
 	maps.Copy(env, environment)
 	var overrides modelOverrides
 	if invocation.Mode == ModeQwen {
-		overrides = endpointOverrides(invocation.Arguments)
+		var err error
+		overrides, err = endpointOverrides(invocation.Arguments)
+		if err != nil {
+			return "", fmt.Errorf("endpointOverrides(): %w", err)
+		}
 	}
 	expand := func(value string) string { return expandEndpointVariables(value, env) }
 	authType := cmp.Or(overrides.AuthType, expand(settings.Security.Auth.SelectedType))
@@ -156,39 +160,6 @@ func (settings qwenSettings) modelEndpoint(environment map[string]string, invoca
 
 func isOpenAIProtocol(protocol string) bool {
 	return protocol == "openai" || protocol == "openai-responses"
-}
-
-// Consume values as arguments rather than interpreting prompt text as flags.
-// Unknown options stay Qwen's responsibility. A bare -- ends option processing.
-func endpointOverrides(arguments []string) modelOverrides {
-	var result modelOverrides
-	for i := 0; i < len(arguments); i++ {
-		argument := arguments[i]
-		if argument == "--" {
-			break
-		}
-		name, value, inline := strings.Cut(argument, "=")
-		switch name {
-		case "--model", "-m", "--auth-type", "--openai-base-url",
-			"--prompt", "-p", "--prompt-interactive", "-i", "--system-prompt", "--append-system-prompt", "--openai-api-key":
-			if !inline {
-				if i+1 >= len(arguments) {
-					continue
-				}
-				i++
-				value = arguments[i]
-			}
-			switch name {
-			case "--model", "-m":
-				result.Model = value
-			case "--auth-type":
-				result.AuthType = value
-			case "--openai-base-url":
-				result.BaseURL = value
-			}
-		}
-	}
-	return result
 }
 
 var endpointVariable = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)`)

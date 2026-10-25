@@ -13,7 +13,6 @@ pkgbase = qwen-isolated-git
 	depends = glibc
 	depends = iproute2
 	depends = nftables
-	depends = slirp4netns
 	depends = util-linux
 	optdepends = nodejs: Node.js runtime, as an alternative to a user-managed nvm installation
 	provides = qwen-isolated

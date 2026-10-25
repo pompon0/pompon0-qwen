@@ -27,13 +27,13 @@ func TestConfiguredModelServer(t *testing.T) {
 		t.Fatal(err)
 	}
 	settingsPath := filepath.Join(home, ".qwen/settings.json")
-	if server, err := configuredModelServer(home, nil, Invocation{}); server.IsPresent() || err != nil {
+	if server, err := configuredModelServer(home, nil, Args{Mode: ModeQwen}); server.IsPresent() || err != nil {
 		t.Fatalf("missing settings: %v, %v", server, err)
 	}
 	if err := os.WriteFile(settingsPath, []byte(localModelSettings), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	server, err := configuredModelServer(home, nil, Invocation{})
+	server, err := configuredModelServer(home, nil, Args{Mode: ModeQwen})
 	endpoint, present := server.Get()
 	if err != nil || !present || endpoint.Address.String() != "192.168.1.50" || endpoint.Port != 11434 {
 		t.Fatalf("configured endpoint: %v, %v", server, err)
@@ -45,7 +45,7 @@ func TestConfiguredModelServer(t *testing.T) {
 	if err := os.WriteFile(settingsPath, []byte(`{"model":`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := configuredModelServer(home, nil, Invocation{}); err == nil {
+	if _, err := configuredModelServer(home, nil, Args{Mode: ModeQwen}); err == nil {
 		t.Fatal("invalid settings did not fail closed")
 	}
 }
@@ -59,7 +59,7 @@ func TestQwenSettingsCannotEscapeSandboxHome(t *testing.T) {
 	if err := os.Symlink(outside, filepath.Join(home, ".qwen")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := configuredModelServer(home, nil, Invocation{}); err == nil {
+	if _, err := configuredModelServer(home, nil, Args{Mode: ModeQwen}); err == nil {
 		t.Fatal("followed settings symlink outside sandbox home")
 	}
 }
@@ -102,7 +102,7 @@ func TestQwenEndpointSelection(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			got, err := settings.modelEndpoint(test.env, Invocation{Arguments: test.args})
+			got, err := settings.modelEndpoint(test.env, Args{Mode: ModeQwen, Arguments: test.args})
 			if (err != nil) != test.wantError || got != test.want {
 				t.Fatalf("endpoint=%q, error=%v; want %q, error=%v", got, err, test.want, test.wantError)
 			}
@@ -116,7 +116,7 @@ func TestEndpointVariableExpansion(t *testing.T) {
 		t.Fatal(err)
 	}
 	settings.Env["MODEL_HOST"], settings.Env["MODEL_PORT"] = "192.168.1.50", "11434"
-	endpoint, err := settings.modelEndpoint(map[string]string{"MODEL_PORT": "8000"}, Invocation{})
+	endpoint, err := settings.modelEndpoint(map[string]string{"MODEL_PORT": "8000"}, Args{Mode: ModeQwen})
 	if err != nil || endpoint != "http://192.168.1.50:8000/v1" {
 		t.Fatalf("endpoint %q, %v", endpoint, err)
 	}
@@ -126,7 +126,10 @@ func TestEndpointVariableExpansion(t *testing.T) {
 }
 
 func TestEndpointOverridesSkipPromptValues(t *testing.T) {
-	got := endpointOverrides([]string{"--prompt", "--model", "--model=other", "--", "--model=ignored"})
+	got, err := endpointOverrides([]string{"--prompt", "--model", "--model=other", "--", "--model=ignored"})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if got.Model != "other" {
 		t.Fatalf("unexpected model override %q", got.Model)
 	}

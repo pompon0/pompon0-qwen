@@ -123,7 +123,7 @@ func verifyNoUserNamespaces(ctx context.Context) error {
 	}
 	// Probe in a child created in a new user namespace, rather than changing
 	// namespaces on a thread owned by Go's multithreaded runtime.
-	cmd := exec.CommandContext(ctx, launcher, string(helperUserNSProbe))
+	cmd := exec.CommandContext(ctx, launcher, string(ModeUserNSProbe))
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		Cloneflags:                 unix.CLONE_NEWUSER,
 		UidMappings:                []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getuid(), Size: 1}},

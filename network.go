@@ -61,8 +61,8 @@ func modelServerFromURL(value string) (utils.Option[ModelServer], error) {
 	if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsMulticast() || ip.IsUnspecified() || netip.MustParsePrefix("240.0.0.0/4").Contains(ip) {
 		return utils.None[ModelServer](), fmt.Errorf("model baseUrl must use a LAN/public IPv4 address")
 	}
-	if netip.MustParsePrefix("10.0.2.0/24").Contains(ip) {
-		return utils.None[ModelServer](), fmt.Errorf("model baseUrl overlaps the slirp virtual subnet 10.0.2.0/24")
+	if netip.MustParsePrefix(networkSubnet).Contains(ip) {
+		return utils.None[ModelServer](), fmt.Errorf("model baseUrl overlaps the sandbox virtual subnet 10.0.2.0/24")
 	}
 	return utils.Some(ModelServer{Address: ip, Port: uint16(port)}), nil
 }

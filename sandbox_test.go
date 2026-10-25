@@ -5,17 +5,13 @@ import (
 	"testing"
 )
 
-func TestInvocationAndWorkload(t *testing.T) {
+func TestArgsAndWorkload(t *testing.T) {
 	c := Config{Project: "/host/project", Home: "/host/state/home", NodePrefix: "/host/node", WorkingDirectory: "/workspace/sub", Launcher: "/host/launcher", Environment: map[string]string{"HOME": "/home/qwen"}}
 	for _, test := range []struct{ args, workload []string }{
 		{nil, []string{"/opt/node/bin/qwen"}},
 		{[]string{"--model", "a b"}, []string{"/opt/node/bin/qwen", "--model", "a b"}},
-		{[]string{"--shell", "-c", "echo hello"}, []string{"/usr/bin/bash", "--noprofile", "--norc", "-c", "echo hello"}},
 	} {
-		invocation, err := parseInvocation(test.args)
-		if err != nil {
-			t.Fatal(err)
-		}
+		invocation := Args{Mode: ModeQwen, Arguments: test.args}
 		plan, err := buildSandbox(c, invocation, "/run-dir")
 		if err != nil {
 			t.Fatal(err)
@@ -24,7 +20,7 @@ func TestInvocationAndWorkload(t *testing.T) {
 			t.Errorf("workload: %v", plan.Workload)
 		}
 		if containsSequence(plan.BubblewrapArguments, []string{"--ro-bind", c.Launcher, sandboxCheckerPath}) {
-			t.Fatal("launcher should only be exposed in check mode")
+			t.Fatal("launcher should only be exposed in isolation-check mode")
 		}
 		for _, sequence := range [][]string{
 			{"--cap-drop", "ALL", "--clearenv"}, {"--unshare-user", "--disable-userns", "--share-net"},
@@ -36,18 +32,12 @@ func TestInvocationAndWorkload(t *testing.T) {
 			}
 		}
 	}
-	if _, err := parseInvocation([]string{"--check", "extra"}); err == nil {
-		t.Fatal("check accepted extra arguments")
-	}
-	invocation, err := parseInvocation([]string{"--check"})
-	if err != nil {
-		t.Fatal(err)
-	}
+	invocation := Args{Mode: ModeIsolationCheck}
 	plan, err := buildSandbox(c, invocation, "/run-dir")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(plan.Workload, []string{sandboxCheckerPath, string(helperCheck), "/run-dir/host-canary"}) {
+	if !slices.Equal(plan.Workload, []string{sandboxCheckerPath, string(ModeIsolationProbe), "/run-dir/host-canary"}) {
 		t.Fatalf("check should execute the Go helper: %v", plan.Workload)
 	}
 	if !containsSequence(plan.BubblewrapArguments, []string{"--ro-bind", c.Launcher, sandboxCheckerPath}) {

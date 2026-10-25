@@ -14,13 +14,14 @@ repository is public. It is not published to the AUR yet.
 The package builds from source with Go 1.27.3 or later and installs the launcher
 at `/usr/bin/qwen-isolated`. Pacman manages its sandbox dependencies. Qwen Code
 must already be installed in the Node prefix selected by your active `node`,
-including when using nvm. Run as your ordinary user; user namespaces must be enabled.
+including when using nvm. Run as your ordinary user; user namespaces must be
+enabled and the host must expose the Linux TUN/TAP device at `/dev/net/tun`.
 
 ## Run in a Git repository
 
 ```sh
 cd /path/to/project
-qwen-isolated --check
+qwen-isolated isolation-check
 qwen-isolated
 ```
 
@@ -34,9 +35,8 @@ are rejected; no custom approval marker is needed.
 ## Usage and configuration
 
 * `qwen-isolated [arguments...]` forwards arguments to Qwen.
-* `qwen-isolated --shell [bash arguments...]` runs a sandboxed shell.
-* `qwen-isolated --check` tests filesystem, privileges, and sample network connections.
-* `qwen-isolated --isolation-help` prints help without starting the sandbox.
+* `qwen-isolated isolation-check` tests filesystem, privileges, and sample network connections.
+* `qwen-isolated help` prints help without starting the sandbox.
 
 ### Qwen configuration
 
@@ -49,8 +49,8 @@ file is `/home/qwen/.qwen/settings.json`. On the host, this maps to:
 ```
 
 Each repository has a persistent Qwen home. Your host's ordinary
-`~/.qwen/settings.json` is not exposed. Use `qwen-isolated --shell` to access the
-sandbox home; there, `~/.qwen/settings.json` refers to the file above.
+`~/.qwen/settings.json` is not exposed. Edit the sandbox user settings at the
+host path above.
 
 For example, configure an Ollama model in that settings file:
 
@@ -97,14 +97,14 @@ environment variables are also considered. Unselected providers grant no access.
 Use a literal LAN IPv4 address in `baseUrl`. HTTP and HTTPS default to ports 80
 and 443 when no port is specified. Hostnames use normal filtered networking;
 the launcher does not resolve them on the host to grant LAN exceptions. Loopback,
-link-local, IPv6, and slirp-subnet endpoints cannot receive an exception.
+link-local, IPv6, and sandbox-subnet endpoints cannot receive an exception.
 
 Automatic exceptions read the sandbox's user settings, not repository-supplied
 settings. Put the endpoint directly in `baseUrl`; endpoint variable references
 can use the settings `env` field or forwarded environment. `.env` files can still
 supply credentials to Qwen but are not read by the launcher's endpoint resolver.
 JSON comments in settings are supported. Invalid or ambiguous endpoint settings
-abort startup; use `--shell` to repair them. Shell mode grants no model exception.
+abort startup; repair the sandbox user settings at the host path above.
 
 The exception overrides destination blocks for only the selected address and TCP
 port. It is fixed at startup: relaunch after changing endpoints or switching to
@@ -116,8 +116,10 @@ Relaunch after LAN/VPN route changes.
 
 | File | Responsibility |
 | --- | --- |
-| `main.go` | CLI entry point, help, signals, and launch sequence |
+| `main.go` | CLI entry point, signals, and exit status |
+| `cli.go` | Cobra commands, argument validation, model overrides, and help |
 | `config.go` | Git repository discovery, tool discovery, state paths, environment |
+| `user_network.go` | Namespace TAP setup, descriptor handoff, embedded network stack |
 | `network.go` | Typed IPv4 parsing, host network discovery, prefix normalization |
 | `qwen_config.go` | Qwen user settings and selected model endpoint resolution |
 | `policy.go` | Destination policy and nftables rendering |
@@ -127,20 +129,28 @@ Relaunch after LAN/VPN route changes.
 | `check.go` | Native Go isolation diagnostics executed inside the sandbox |
 | `packaging/aur/` | AUR recipe, metadata, and publishing workflow |
 
-CLI help is defined in Go; installation needs only the executable.
+Commands, argument validation, and help are defined with Cobra; installation
+needs only the executable. Qwen endpoint flags are inspected with `pflag` for
+firewall configuration.
+The optional positional mode must come first and defaults to `qwen` when omitted
+or when the first argument starts with `-`. Use an explicit `qwen` mode before a
+positional Qwen prompt. The remaining arguments are
+forwarded unchanged to Qwen. `--help` and `-h` remain Qwen flags; use
+`help` for launcher help.
 The launcher re-executes itself for trusted setup and mounts itself read-only
-inside the sandbox only for `--check`. Bash is used only for `--shell`.
+inside the sandbox only for `isolation-check`.
 Configuration, policy, sandbox plans, and process supervision are
 separate so each can be changed without redesigning the rest of the launcher.
 
 ## Isolation boundary
 
 Trusted setup installs nftables inside a private user/network namespace before
-attaching host-side slirp4netns. Bubblewrap starts the workload in a child user
-namespace, with all capabilities dropped and further user namespaces disabled.
+attaching the TAP interface to the supervisor’s embedded `gvisor-tap-vsock` Go
+network stack. No network subprocess or separate network binary is needed. Bubblewrap starts the workload in a child
+user namespace, with all capabilities dropped and further user namespaces disabled.
 Qwen shares the filtered network but cannot change its firewall. Setup failures
-abort startup; losing slirp terminates the sandbox. No host firewall changes or
-host root privileges are required.
+abort startup; packet processing failures terminate the sandbox. No host firewall
+changes or host root privileges are required.
 
 The project and sandbox home are writable. `/usr`, the Node installation, and
 selected system configuration are read-only. Temporary mounts are ephemeral.
@@ -157,4 +167,4 @@ go vet ./...
 
 Tests cover policy, project selection, environment filtering, sandbox plans,
 and process startup/failure handling. For actual kernel/network isolation,
-run the installed executable's `--check` mode on a configured Linux host.
+run the installed executable's `isolation-check` mode on a configured Linux host.

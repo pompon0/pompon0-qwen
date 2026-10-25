@@ -2,7 +2,6 @@ package main
 
 import (
 	"bufio"
-	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -12,16 +11,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// Helpers run in different privilege contexts and are dispatched before normal
-// CLI setup. They must never load project code, Qwen configuration, or hooks.
-type helperMode string
-
-const (
-	helperSetup        helperMode = "--internal-net-setup"
-	helperCheck        helperMode = "--internal-check"
-	helperUserNSProbe  helperMode = "--internal-userns-probe"
-	sandboxCheckerPath            = "/opt/qwen-isolated-check"
-)
+const sandboxCheckerPath = "/opt/qwen-isolated-check"
 
 // exec.Cmd.ExtraFiles maps the setup pipes to these child descriptors.
 type setupDescriptor uintptr
@@ -31,37 +21,6 @@ const (
 	setupStartDescriptor setupDescriptor = 4
 )
 
-func runInternalHelper(arguments []string) (handled bool, err error) {
-	if len(arguments) == 0 {
-		return false, nil
-	}
-	mode := helperMode(arguments[0])
-	switch mode {
-	case helperSetup:
-		var setup namespaceSetup
-		setup, err = parseNamespaceSetup(arguments[1:])
-		if err == nil {
-			err = setup.run()
-		}
-	case helperCheck:
-		if len(arguments) != 2 {
-			err = errors.New("internal check requires a host canary path")
-		} else {
-			err = runIsolationChecks(context.Background(), arguments[1], os.Stdout)
-		}
-	case helperUserNSProbe:
-		if len(arguments) != 1 {
-			err = errors.New("internal namespace probe takes no arguments")
-		}
-	default:
-		return false, nil
-	}
-	if err != nil {
-		return true, fmt.Errorf("%s: %w", mode, err)
-	}
-	return true, nil
-}
-
 // namespaceSetup holds only trusted supervisor inputs. SandboxArguments starts
 // with the Bubblewrap executable and is passed directly to exec, never a shell.
 type namespaceSetup struct {
@@ -70,14 +29,11 @@ type namespaceSetup struct {
 	SandboxArguments []string
 }
 
-func parseNamespaceSetup(arguments []string) (namespaceSetup, error) {
-	if len(arguments) < 3 {
-		return namespaceSetup{}, errors.New("internal setup requires nft, policy, and a sandbox command")
-	}
-	return namespaceSetup{NFTExecutable: arguments[0], PolicyFile: arguments[1], SandboxArguments: arguments[2:]}, nil
-}
-
 func (descriptor setupDescriptor) open(name string) (*os.File, error) {
+	// Inherited pipes must be pollable so closing them interrupts scoped reads.
+	if err := unix.SetNonblock(int(descriptor), true); err != nil {
+		return nil, fmt.Errorf("set %s nonblocking: %w", name, err)
+	}
 	file := os.NewFile(uintptr(descriptor), name)
 	if file == nil {
 		return nil, fmt.Errorf("missing %s pipe", name)
@@ -90,7 +46,7 @@ func (descriptor setupDescriptor) open(name string) (*os.File, error) {
 	return file, nil
 }
 
-func (setup namespaceSetup) run() error {
+func (setup namespaceSetup) run(createTAP func() (*os.File, error)) error {
 	ready, err := setupReadyDescriptor.open("setup readiness")
 	if err != nil {
 		return err
@@ -101,17 +57,33 @@ func (setup namespaceSetup) run() error {
 		return err
 	}
 	defer start.Close()
+	networkSocket, err := setupNetworkDescriptor.open("TAP handoff")
+	if err != nil {
+		return err
+	}
+	defer networkSocket.Close()
 	// This stage runs trusted code only, before any Qwen/project code.
 	cmd := exec.Command(setup.NFTExecutable, "-f", setup.PolicyFile)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("load namespace firewall: %w", err)
 	}
+	tap, err := createTAP()
+	if err != nil {
+		return fmt.Errorf("createNamespaceTAP(): %w", err)
+	}
+	defer tap.Close()
+	if err := sendTAP(networkSocket, tap); err != nil {
+		return err
+	}
+	if err := networkSocket.Close(); err != nil {
+		return err
+	}
 	if err := awaitSandboxPermission(ready, start); err != nil {
 		return err
 	}
-	// Replace this process so slirp remains attached to the same PID and network
-	// namespace. The Go runtime never changes namespaces on a running thread.
+	// Replace this process while preserving the configured network namespace.
+	// The Go runtime never changes namespaces on a running thread.
 	return unix.Exec(setup.SandboxArguments[0], setup.SandboxArguments, os.Environ())
 }
 
