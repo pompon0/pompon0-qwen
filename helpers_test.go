@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"os"
 	"testing"
 
@@ -13,8 +14,11 @@ import (
 // Supervisor tests re-exec this test binary through the same private helper
 // protocol as the installed launcher. Production setup runs without Bash.
 func TestMain(m *testing.M) {
-	if code, handled := runInternalHelper(os.Args[1:]); handled {
-		os.Exit(code)
+	if handled, err := runInternalHelper(os.Args[1:]); handled {
+		if err != nil {
+			slog.Error("internal helper failed", slog.Any("error", err))
+		}
+		os.Exit(processExitCode(err))
 	}
 	os.Exit(m.Run())
 }
@@ -35,8 +39,8 @@ func TestSandboxStartupPermission(t *testing.T) {
 			defer startR.Close()
 			defer startW.Close()
 			var ready [1]byte
-			err = scope.Run(t.Context(), func(_ context.Context, tasks scope.Scope) error {
-				tasks.Spawn(func() error { return awaitSandboxPermission(readyW, startR) })
+			err = scope.Run(t.Context(), func(_ context.Context, s scope.Scope) error {
+				s.Spawn(func() error { return awaitSandboxPermission(readyW, startR) })
 				_, readErr := io.ReadFull(readyR, ready[:])
 				_, writeErr := io.WriteString(startW, message)
 				_ = startW.Close()

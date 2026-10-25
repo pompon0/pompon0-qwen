@@ -31,12 +31,12 @@ const (
 	setupStartDescriptor setupDescriptor = 4
 )
 
-func runInternalHelper(arguments []string) (code int, handled bool) {
+func runInternalHelper(arguments []string) (handled bool, err error) {
 	if len(arguments) == 0 {
-		return 0, false
+		return false, nil
 	}
-	var err error
-	switch helperMode(arguments[0]) {
+	mode := helperMode(arguments[0])
+	switch mode {
 	case helperSetup:
 		var setup namespaceSetup
 		setup, err = parseNamespaceSetup(arguments[1:])
@@ -54,13 +54,12 @@ func runInternalHelper(arguments []string) (code int, handled bool) {
 			err = errors.New("internal namespace probe takes no arguments")
 		}
 	default:
-		return 0, false
+		return false, nil
 	}
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "qwen-isolated:", err)
-		return 1, true
+		return true, fmt.Errorf("%s: %w", mode, err)
 	}
-	return 0, true
+	return true, nil
 }
 
 // namespaceSetup holds only trusted supervisor inputs. SandboxArguments starts

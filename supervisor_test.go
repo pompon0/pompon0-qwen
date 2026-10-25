@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pompon0/pompon0-qwen/utils"
 	"github.com/pompon0/pompon0-qwen/utils/scope"
 )
 
@@ -51,9 +52,9 @@ func TestSupervisorSuccessfulHandshakeAndExitStatus(t *testing.T) {
 	plan := SandboxPlan{Workload: []string{"/bin/bash", "-c", "test -f '" + filepath.Join(dir, "firewall-ready") + "'; exit 23"}}
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
-	code, err := supervise(ctx, tools, plan, dir)
-	if err != nil || code != 23 {
-		t.Fatalf("code %d, error %v", code, err)
+	err := supervise(ctx, tools, plan, dir)
+	if exited, ok := errors.AsType[*exec.ExitError](err); !ok || exited.ExitCode() != 23 {
+		t.Fatalf("expected workload exit status 23, got %v", err)
 	}
 }
 
@@ -62,7 +63,7 @@ func TestSupervisorFirewallFailureDoesNotLaunchWorkload(t *testing.T) {
 	marker := filepath.Join(dir, "workload-started")
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
-	_, err := supervise(ctx, tools, SandboxPlan{Workload: []string{"/usr/bin/touch", marker}}, dir)
+	err := supervise(ctx, tools, SandboxPlan{Workload: []string{"/usr/bin/touch", marker}}, dir)
 	if err == nil {
 		t.Fatal("ignored firewall setup failure")
 	}
@@ -75,7 +76,7 @@ func TestSupervisorNetworkFailureStopsWorkload(t *testing.T) {
 	tools, dir := fakeTools(t, false, true)
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
-	_, err := supervise(ctx, tools, SandboxPlan{Workload: []string{"/bin/bash", "-c", "touch '" + filepath.Join(dir, "workload-started") + "'; exec sleep 30"}}, dir)
+	err := supervise(ctx, tools, SandboxPlan{Workload: []string{"/bin/bash", "-c", "touch '" + filepath.Join(dir, "workload-started") + "'; exec sleep 30"}}, dir)
 	if err == nil || !strings.Contains(err.Error(), "slirp4netns stopped") {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -86,24 +87,18 @@ func TestSupervisorCancellationReapsBothChildren(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 	pidPath := filepath.Join(dir, "workload.pid")
-	err := scope.Run(ctx, func(ctx context.Context, tasks scope.Scope) error {
-		tasks.SpawnBg(func() error {
-			ticker := time.NewTicker(10 * time.Millisecond)
-			defer ticker.Stop()
-			for {
-				if data, err := os.ReadFile(pidPath); err == nil && len(data) > 0 {
-					cancel()
-					return nil
-				}
-				select {
-				case <-ctx.Done():
-					return ctx.Err()
-				case <-ticker.C:
-				}
+	err := scope.Run(ctx, func(ctx context.Context, s scope.Scope) error {
+		s.SpawnBg(func() error {
+			if err := utils.WaitFor(ctx, 10*time.Millisecond, func() bool {
+				data, err := os.ReadFile(pidPath)
+				return err == nil && len(data) > 0
+			}); err != nil {
+				return err
 			}
+			cancel()
+			return nil
 		})
-		_, err := supervise(ctx, tools, SandboxPlan{Workload: []string{"/bin/bash", "-c", "echo $$ > '" + pidPath + "'; exec sleep 30"}}, dir)
-		return err
+		return supervise(ctx, tools, SandboxPlan{Workload: []string{"/bin/bash", "-c", "echo $$ > '" + pidPath + "'; exec sleep 30"}}, dir)
 	})
 	cancel()
 	if !errors.Is(err, context.Canceled) {
@@ -134,8 +129,8 @@ func TestAwaitReadyTimeoutAndCancellation(t *testing.T) {
 		if canceled {
 			cancel()
 		}
-		err = scope.Run(t.Context(), func(_ context.Context, tasks scope.Scope) error {
-			process, err := startProcess(tasks, exec.Command("/bin/sleep", "30"))
+		err = scope.Run(t.Context(), func(_ context.Context, s scope.Scope) error {
+			process, err := startProcess(s, exec.Command("/bin/sleep", "30"))
 			if err != nil {
 				return err
 			}

@@ -116,7 +116,7 @@ Relaunch after LAN/VPN route changes.
 
 | File | Responsibility |
 | --- | --- |
-| `main.go` | CLI entry point, signals, and launch sequence |
+| `main.go` | CLI entry point, help, signals, and launch sequence |
 | `config.go` | Git repository discovery, tool discovery, state paths, environment |
 | `network.go` | Typed IPv4 parsing, host network discovery, prefix normalization |
 | `qwen_config.go` | Qwen user settings and selected model endpoint resolution |
@@ -125,10 +125,9 @@ Relaunch after LAN/VPN route changes.
 | `supervisor.go` | Startup handshake, child processes, timeouts, cleanup |
 | `helpers.go` | Private Go helper modes, firewall setup, and workload startup gate |
 | `check.go` | Native Go isolation diagnostics executed inside the sandbox |
-| `help.txt` | CLI help |
 | `packaging/aur/` | AUR recipe, metadata, and publishing workflow |
 
-Help is embedded at build time; installation needs only the executable.
+CLI help is defined in Go; installation needs only the executable.
 The launcher re-executes itself for trusted setup and mounts itself read-only
 inside the sandbox only for `--check`. Bash is used only for `--shell`.
 Configuration, policy, sandbox plans, and process supervision are

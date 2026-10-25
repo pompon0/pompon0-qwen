@@ -1,16 +1,12 @@
 package main
 
 import (
-	_ "embed"
 	"fmt"
 	"maps"
 	"os"
 	"path/filepath"
 	"slices"
 )
-
-//go:embed help.txt
-var helpText string
 
 type Mode uint8
 

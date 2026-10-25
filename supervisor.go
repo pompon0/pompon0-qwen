@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/pompon0/pompon0-qwen/utils"
 	"github.com/pompon0/pompon0-qwen/utils/scope"
 )
 
@@ -30,15 +32,15 @@ type managedProcess struct {
 	err  error
 }
 
-func startProcess(tasks scope.Scope, cmd *exec.Cmd) (*managedProcess, error) {
+func startProcess(s scope.Scope, cmd *exec.Cmd) (*managedProcess, error) {
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
 	p := &managedProcess{cmd: cmd, done: make(chan struct{})}
-	tasks.SpawnBg(func() error {
+	s.SpawnBg(func() error {
 		p.err = cmd.Wait()
 		close(p.done)
-		// Workload exit codes are results, not group errors. Supervision
+		// Record completion without canceling the owner prematurely. Supervision
 		// decides whether a process exit is expected using p.done and p.err.
 		return nil
 	})
@@ -59,20 +61,20 @@ func (p *managedProcess) stop() {
 		return
 	}
 	_ = p.cmd.Process.Signal(syscall.SIGTERM)
-	timer := time.NewTimer(shutdownTimeout)
-	defer timer.Stop()
-	select {
-	case <-p.done:
-	case <-timer.C:
+	err := utils.WithTimeout(context.Background(), shutdownTimeout, func(ctx context.Context) error {
+		_, _, err := utils.RecvOrClosed(ctx, p.done)
+		return err
+	})
+	if err != nil {
 		_ = p.cmd.Process.Kill()
-		<-p.done
+		_, _, _ = utils.RecvOrClosed(context.Background(), p.done)
 	}
 }
 
 func awaitReady(ctx context.Context, ready *os.File, process *managedProcess, description string, timeout time.Duration) error {
-	return scope.Run(ctx, func(ctx context.Context, readers scope.Scope) error {
+	return scope.Run(ctx, func(ctx context.Context, s scope.Scope) error {
 		result := make(chan error, 1)
-		readers.SpawnBg(func() error {
+		s.SpawnBg(func() error {
 			var value [1]byte
 			_, err := io.ReadFull(ready, value[:])
 			if err == nil && value[0] != '1' {
@@ -104,13 +106,13 @@ func awaitReady(ctx context.Context, ready *os.File, process *managedProcess, de
 
 // The setup helper waits until both nftables and slirp are ready before execing
 // Bubblewrap. Qwen never runs during the privileged setup phase.
-func supervise(ctx context.Context, tools Tools, plan SandboxPlan, runDir string) (int, error) {
-	return scope.Run1(ctx, func(ctx context.Context, tasks scope.Scope) (int, error) {
-		return superviseInScope(ctx, tasks, tools, plan, runDir)
+func supervise(ctx context.Context, tools Tools, plan SandboxPlan, runDir string) error {
+	return scope.Run(ctx, func(ctx context.Context, s scope.Scope) error {
+		return superviseInScope(ctx, s, tools, plan, runDir)
 	})
 }
 
-func superviseInScope(ctx context.Context, tasks scope.Scope, tools Tools, plan SandboxPlan, runDir string) (code int, err error) {
+func superviseInScope(ctx context.Context, s scope.Scope, tools Tools, plan SandboxPlan, runDir string) (err error) {
 	var opened []*os.File
 	defer func() {
 		for _, file := range opened {
@@ -126,24 +128,24 @@ func superviseInScope(ctx context.Context, tasks scope.Scope, tools Tools, plan 
 	}
 	readyR, readyW, err := pipe()
 	if err != nil {
-		return 0, err
+		return err
 	}
 	startR, startW, err := pipe()
 	if err != nil {
-		return 0, err
+		return err
 	}
 	slirpR, slirpW, err := pipe()
 	if err != nil {
-		return 0, err
+		return err
 	}
 	exitR, exitW, err := pipe()
 	if err != nil {
-		return 0, err
+		return err
 	}
 	logPath := filepath.Join(runDir, "slirp.log")
 	log, err := os.OpenFile(logPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 	if err != nil {
-		return 0, err
+		return err
 	}
 	defer log.Close()
 	var processes []*managedProcess
@@ -153,18 +155,19 @@ func superviseInScope(ctx context.Context, tasks scope.Scope, tools Tools, plan 
 		for _, process := range processes {
 			process.stop()
 		}
-		if err != nil {
+		_, workloadExited := errors.AsType[*exec.ExitError](err)
+		if err != nil && !workloadExited {
 			if contents, readErr := os.ReadFile(logPath); readErr == nil && strings.TrimSpace(string(contents)) != "" {
-				fmt.Fprintln(os.Stderr, strings.TrimSpace(string(contents)))
+				slog.ErrorContext(ctx, "slirp4netns diagnostics", slog.String("output", strings.TrimSpace(string(contents))))
 			}
 		}
 	}()
 	if err := ctx.Err(); err != nil {
-		return 0, err
+		return err
 	}
 	launcher, err := os.Executable()
 	if err != nil {
-		return 0, fmt.Errorf("locate setup helper: %w", err)
+		return fmt.Errorf("locate setup helper: %w", err)
 	}
 	args := []string{
 		"--user", "--map-root-user", "--net", "--",
@@ -178,15 +181,15 @@ func superviseInScope(ctx context.Context, tasks scope.Scope, tools Tools, plan 
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	// ExtraFiles maps consecutively to child descriptors 3 and 4.
 	cmd.ExtraFiles = []*os.File{readyW, startR}
-	child, err := startProcess(tasks, cmd)
+	child, err := startProcess(s, cmd)
 	if err != nil {
-		return 0, fmt.Errorf("start namespace setup: %w", err)
+		return fmt.Errorf("start namespace setup: %w", err)
 	}
 	processes = append(processes, child)
 	_ = readyW.Close()
 	_ = startR.Close()
 	if err := awaitReady(ctx, readyR, child, "namespace/firewall setup", startupTimeout); err != nil {
-		return 0, err
+		return err
 	}
 	cmd = exec.Command(tools.Slirp,
 		"--configure", "--disable-host-loopback", "--disable-dns",
@@ -194,34 +197,34 @@ func superviseInScope(ctx context.Context, tasks scope.Scope, tools Tools, plan 
 	cmd.Env = helperEnvironment
 	cmd.Stdout, cmd.Stderr = log, log
 	cmd.ExtraFiles = []*os.File{slirpW, exitR}
-	slirp, err := startProcess(tasks, cmd)
+	slirp, err := startProcess(s, cmd)
 	if err != nil {
-		return 0, fmt.Errorf("start slirp4netns: %w", err)
+		return fmt.Errorf("start slirp4netns: %w", err)
 	}
 	processes = append(processes, slirp)
 	_ = slirpW.Close()
 	_ = exitR.Close()
 	if err := awaitReady(ctx, slirpR, slirp, "slirp4netns", startupTimeout); err != nil {
-		return 0, err
+		return err
 	}
 	if child.exited() || slirp.exited() {
-		return 0, fmt.Errorf("a setup helper exited unexpectedly")
+		return fmt.Errorf("a setup helper exited unexpectedly")
 	}
 	if _, err := io.WriteString(startW, "go\n"); err != nil {
-		return 0, fmt.Errorf("release sandbox startup gate: %w", err)
+		return fmt.Errorf("release sandbox startup gate: %w", err)
 	}
 	_ = startW.Close()
 	select {
 	case <-child.done:
-		return processExitCode(child.err), nil
+		return child.err
 	case <-slirp.done:
 		// A normal workload exit can race slirp's exit notification.
 		if child.exited() {
-			return processExitCode(child.err), nil
+			return child.err
 		}
-		return 0, fmt.Errorf("slirp4netns stopped; terminating the sandbox")
+		return fmt.Errorf("slirp4netns stopped; terminating the sandbox")
 	case <-ctx.Done():
-		return 0, ctx.Err()
+		return ctx.Err()
 	}
 }
 
