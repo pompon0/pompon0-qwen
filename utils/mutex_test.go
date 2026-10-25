@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/sei-protocol/sei-chain/sei-tendermint/libs/utils"
-	"github.com/sei-protocol/sei-chain/sei-tendermint/libs/utils/require"
-	"github.com/sei-protocol/sei-chain/sei-tendermint/libs/utils/scope"
+	"github.com/gprusak/gprusak-qwen/utils"
+	"github.com/gprusak/gprusak-qwen/utils/require"
+	"github.com/gprusak/gprusak-qwen/utils/scope"
 )
 
 func TestAtomicSend(t *testing.T) {

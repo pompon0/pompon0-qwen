@@ -8,7 +8,6 @@ import (
 	"math/rand"
 	"time"
 
-	"github.com/gogo/protobuf/proto"
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
 	"google.golang.org/protobuf/testing/protocmp"
@@ -184,23 +183,6 @@ func GenMapN[K comparable, V any](rng Rng, n int, genK GenF[K], genV GenF[V]) ma
 // GenTimestamp generates a random timestamp.
 func GenTimestamp(rng Rng) time.Time {
 	return time.Unix(0, rng.Int63())
-}
-
-// Test tests whether reencoding a value is an identity operation.
-func (c *ProtoConv[T, P]) Test(want T) error {
-	p := c.Encode(want)
-	raw, err := proto.Marshal(p)
-	if err != nil {
-		return fmt.Errorf("Marshal(): %w", err)
-	}
-	if err := proto.Unmarshal(raw, p); err != nil {
-		return fmt.Errorf("Unmarshal(): %w", err)
-	}
-	got, err := c.Decode(p)
-	if err != nil {
-		return fmt.Errorf("Decode(Encode()): %w", err)
-	}
-	return TestDiff(want, got)
 }
 
 // IgnoreAfterCancel silently drops the error if the context is already canceled.

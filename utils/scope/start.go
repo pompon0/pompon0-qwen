@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/sei-protocol/sei-chain/sei-tendermint/libs/utils"
+	"github.com/gprusak/gprusak-qwen/utils"
 )
 
 type scope struct {

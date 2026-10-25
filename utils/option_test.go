@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/sei-protocol/sei-chain/sei-tendermint/libs/utils/require"
+	"github.com/gprusak/gprusak-qwen/utils/require"
 )
 
 func testJSON[T any](t *testing.T, want T) {
