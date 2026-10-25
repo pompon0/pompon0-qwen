@@ -27,25 +27,24 @@ func TestConfiguredModelServer(t *testing.T) {
 		t.Fatal(err)
 	}
 	settingsPath := filepath.Join(home, ".qwen/settings.json")
-	if server, err := configuredModelServer(home, nil, Args{Mode: ModeQwen}); server.IsPresent() || err != nil {
+	if server, err := configuredModelEndpoint(t.Context(), home, nil, Args{Mode: ModeQwen}); len(server.Addresses) != 0 || err != nil {
 		t.Fatalf("missing settings: %v, %v", server, err)
 	}
 	if err := os.WriteFile(settingsPath, []byte(localModelSettings), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	server, err := configuredModelServer(home, nil, Args{Mode: ModeQwen})
-	endpoint, present := server.Get()
-	if err != nil || !present || endpoint.String() != "192.168.1.50:11434" {
+	server, err := configuredModelEndpoint(t.Context(), home, nil, Args{Mode: ModeQwen})
+	if err != nil || len(server.Addresses) != 1 || server.Addresses[0].String() != "192.168.1.50:11434" {
 		t.Fatalf("configured endpoint: %v, %v", server, err)
 	}
-	policy := newNetworkPolicy(HostNetwork{}, nil, server)
+	policy := newNetworkPolicy(HostNetwork{}, nil, server.Addresses)
 	if rules := policy.NFTables(); !strings.Contains(rules, "ip daddr 192.168.1.50 tcp dport 11434 accept") || strings.Contains(rules, "ip daddr 192.168.1.60 tcp dport 8000 accept") {
 		t.Fatal("policy must allow only the selected endpoint")
 	}
 	if err := os.WriteFile(settingsPath, []byte(`{"model":`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := configuredModelServer(home, nil, Args{Mode: ModeQwen}); err == nil {
+	if _, err := configuredModelEndpoint(t.Context(), home, nil, Args{Mode: ModeQwen}); err == nil {
 		t.Fatal("invalid settings did not fail closed")
 	}
 }
@@ -59,7 +58,7 @@ func TestQwenSettingsCannotEscapeSandboxHome(t *testing.T) {
 	if err := os.Symlink(outside, filepath.Join(home, ".qwen")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := configuredModelServer(home, nil, Args{Mode: ModeQwen}); err == nil {
+	if _, err := configuredModelEndpoint(t.Context(), home, nil, Args{Mode: ModeQwen}); err == nil {
 		t.Fatal("followed settings symlink outside sandbox home")
 	}
 }

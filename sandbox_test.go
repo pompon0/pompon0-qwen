@@ -72,7 +72,7 @@ func TestPodmanPlan(t *testing.T) {
 
 func TestMinimalRootfs(t *testing.T) {
 	directory := t.TempDir()
-	if err := writeRunFiles(directory, ModeQwen); err != nil {
+	if err := writeRunFiles(directory, ModeQwen, ModelEndpoint{}); err != nil {
 		t.Fatal(err)
 	}
 	root := filepath.Join(directory, "rootfs")
@@ -93,7 +93,7 @@ func TestMinimalRootfs(t *testing.T) {
 
 func TestIsolationCheckCreatesHostCanary(t *testing.T) {
 	directory := t.TempDir()
-	if err := writeRunFiles(directory, ModeIsolationCheck); err != nil {
+	if err := writeRunFiles(directory, ModeIsolationCheck, ModelEndpoint{}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(directory, "host-canary")); err != nil {

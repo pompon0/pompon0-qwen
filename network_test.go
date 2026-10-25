@@ -1,39 +1,47 @@
 package main
 
 import (
+	"context"
+	"encoding/binary"
+	"errors"
+	"fmt"
+	"net"
 	"net/netip"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/pompon0/pompon0-qwen/utils/scope"
 )
 
-func TestModelServerValidation(t *testing.T) {
-	for _, value := range []string{"http://192.168.1.50:11434/v1", "https://8.8.8.8:65535/v1", "http://10.1.1.1:1", "http://[fd12:3456::50]:11434/v1", "https://[2606:4700:4700::1111]/v1", "http://[::ffff:192.168.1.50]:11434/v1"} {
-		server, err := modelServerFromURL(value)
-		endpoint, present := server.Get()
-		if err != nil || !present || endpoint.Port() == 0 {
-			t.Errorf("rejected %q: %v", value, err)
+func TestModelEndpointResolution(t *testing.T) {
+	for _, test := range []struct{ url, want string }{
+		{"http://192.168.1.50:11434/v1", "192.168.1.50:11434"},
+		{"https://8.8.8.8:65535/v1", "8.8.8.8:65535"},
+		{"http://[fd12:3456::50]:11434/v1", "[fd12:3456::50]:11434"},
+		{"http://[::ffff:192.168.1.50]:11434/v1", "192.168.1.50:11434"},
+		{"http://192.168.1.50/v1", "192.168.1.50:80"},
+		{"https://192.168.1.50/v1", "192.168.1.50:443"},
+		{"https://[fd12::50]/v1", "[fd12::50]:443"},
+		{"ftp://192.168.1.50/v1", "192.168.1.50:21"},
+		{"custom://192.168.1.50:11434/v1", "192.168.1.50:11434"},
+		{"http://127.0.0.1:11434", "127.0.0.1:11434"},
+		{"http://[::1]:11434", "[::1]:11434"},
+	} {
+		endpoint, err := modelEndpointFromURL(t.Context(), test.url)
+		if err != nil || !slices.Equal(endpoint.Addresses, []netip.AddrPort{netip.MustParseAddrPort(test.want)}) {
+			t.Errorf("resolve %q: %+v, %v", test.url, endpoint, err)
 		}
 	}
-	for _, value := range []string{"localhost:11434", "ftp://192.168.1.50/v1", "/v1", "http://localhost:11434", "http://[::1]:11434", "http://127.0.0.1:1", "http://169.254.1.1:1", "http://224.0.0.1:1", "http://240.1.1.1:1", "http://0.0.0.0:1", "http://10.0.2.15:11434", "http://1.1.1.1:0", "http://1.1.1.1:65536", "http://1.1.1.1:+80", "http://1.1.1.1:８０", "http://1.1.1.1:", "http://[::]:11434", "http://[ff02::1]:11434", "http://[fe80::1]:11434", "http://[::ffff:127.0.0.1]:11434", "http://[2001:4860::1%25eth0]:11434", "http://[fd00:2::15]:11434"} {
-		if _, err := modelServerFromURL(value); err == nil {
+	for _, value := range []string{"localhost:11434", "/v1", "custom://192.168.1.50/v1", "http://1.1.1.1:65536", "http://1.1.1.1:+80", "http://1.1.1.1:８０", "http://$MODEL_HOST:11434"} {
+		if _, err := modelEndpointFromURL(t.Context(), value); err == nil {
 			t.Errorf("accepted %q", value)
 		}
 	}
-	if server, err := modelServerFromURL(""); server.IsPresent() || err != nil {
-		t.Fatal("empty exception must be disabled")
-	}
-	for endpoint, port := range map[string]uint16{"http://192.168.1.50/v1": 80, "https://192.168.1.50/v1": 443, "http://[fd12::50]/v1": 80, "https://[fd12::50]/v1": 443} {
-		server, err := modelServerFromURL(endpoint)
-		value, present := server.Get()
-		if err != nil || !present || value.Port() != port {
-			t.Errorf("default port for %q: %v, %v", endpoint, server, err)
-		}
-	}
-	if server, err := modelServerFromURL("https://api.example.com/v1"); server.IsPresent() || err != nil {
-		t.Fatal("public DNS endpoints should use ordinary filtered networking")
+	if endpoint, err := modelEndpointFromURL(t.Context(), ""); len(endpoint.Addresses) != 0 || err != nil {
+		t.Fatal("missing endpoint must not grant an exception", endpoint, err)
 	}
 }
 
@@ -64,14 +72,14 @@ func TestCollapsePrefixes(t *testing.T) {
 }
 
 func TestPolicyCoversHostAndRoutes(t *testing.T) {
-	server, err := modelServerFromURL("http://192.168.1.50:11434/v1")
-	if err != nil || !server.IsPresent() {
+	server, err := modelEndpointFromURL(t.Context(), "http://192.168.1.50:11434/v1")
+	if err != nil || len(server.Addresses) == 0 {
 		t.Fatal(err)
 	}
 	policy := newNetworkPolicy(HostNetwork{
 		LinkRoutes: []netip.Prefix{netip.MustParsePrefix("11.2.0.0/16"), netip.MustParsePrefix("2001:4860:abcd::/64")},
 		Addresses:  []netip.Addr{netip.MustParseAddr("9.8.7.6"), netip.MustParseAddr("2001:4860::8888")},
-	}, []netip.Prefix{netip.MustParsePrefix("12.0.0.0/8"), netip.MustParsePrefix("2606:4700:1234::/64")}, server)
+	}, []netip.Prefix{netip.MustParsePrefix("12.0.0.0/8"), netip.MustParsePrefix("2606:4700:1234::/64")}, server.Addresses)
 	for _, value := range []string{"10.0.0.1", "127.0.0.1", "192.168.1.1", "100.64.0.1", "169.254.169.254", "198.18.0.1", "224.0.0.1", "11.2.3.4", "9.8.7.6", "12.3.4.5", "::", "::1", "fc00::1", "fe80::1", "ff02::1", "2001:db8::1", "2001:4860:abcd::1", "2001:4860::8888", "2606:4700:1234::1", "64:ff9b::a00:1", "64:ff9b::908:706"} {
 		if !policyBlocks(policy, netip.MustParseAddr(value)) {
 			t.Errorf("policy does not block %s", value)
@@ -99,11 +107,11 @@ func policyBlocks(policy NetworkPolicy, address netip.Addr) bool {
 }
 
 func TestIPv6ModelException(t *testing.T) {
-	server, err := modelServerFromURL("http://[fd12:3456::50]:11434/v1")
+	server, err := modelEndpointFromURL(t.Context(), "http://[fd12:3456::50]:11434/v1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	rules := newNetworkPolicy(HostNetwork{}, nil, server).NFTables()
+	rules := newNetworkPolicy(HostNetwork{}, nil, server.Addresses).NFTables()
 	exception := strings.Index(rules, "ip6 daddr fd12:3456::50 tcp dport 11434 accept")
 	if exception < 0 || exception > strings.Index(rules, "ip6 daddr @blocked6") {
 		t.Fatal("exact IPv6 model exception must precede destination blocks")
@@ -132,5 +140,88 @@ esac
 	}
 	if !slices.Equal(network.Addresses, []netip.Addr{netip.MustParseAddr("11.2.0.2"), netip.MustParseAddr("2001:4860:abcd::2")}) {
 		t.Fatalf("host addresses: %v", network.Addresses)
+	}
+}
+
+func TestModelEndpointDNS(t *testing.T) {
+	// Serve real DNS replies locally: no external nameserver or production hook.
+	err := scope.Run(t.Context(), func(ctx context.Context, s scope.Scope) error {
+		connection, err := net.ListenPacket("udp4", "127.0.0.1:0")
+		if err != nil {
+			return err
+		}
+		defer connection.Close()
+		s.SpawnBg(func() error {
+			buffer := make([]byte, 4096)
+			for {
+				n, peer, err := connection.ReadFrom(buffer)
+				if errors.Is(err, net.ErrClosed) {
+					return nil
+				}
+				if err != nil {
+					return err
+				}
+				query := buffer[:n]
+				name, offset := "", 12
+				for query[offset] != 0 {
+					length := int(query[offset])
+					name += string(query[offset+1:offset+1+length]) + "."
+					offset += 1 + length
+				}
+				offset++
+				kind := binary.BigEndian.Uint16(query[offset:])
+				response := append([]byte{}, query[:offset+4]...)
+				binary.BigEndian.PutUint16(response[2:4], 0x8180)
+				clear(response[6:12]) // No answers, authorities, or additional records yet.
+				answers := uint16(0)
+				if name == "model.test." {
+					for _, text := range []string{"192.168.1.50", "192.168.1.50", "192.168.1.60", "fd12::50"} {
+						address := netip.MustParseAddr(text)
+						if (kind == 1 && address.Is4()) || (kind == 28 && address.Is6()) {
+							response = append(response, 0xc0, 0x0c) // Name points to the question.
+							response = binary.BigEndian.AppendUint16(response, kind)
+							response = binary.BigEndian.AppendUint16(response, 1) // IN class.
+							response = binary.BigEndian.AppendUint32(response, 60)
+							response = binary.BigEndian.AppendUint16(response, uint16(len(address.AsSlice())))
+							response = append(response, address.AsSlice()...)
+							answers++
+						}
+					}
+				} else {
+					binary.BigEndian.PutUint16(response[2:4], 0x8183) // NXDOMAIN.
+				}
+				binary.BigEndian.PutUint16(response[6:8], answers)
+				if _, err := connection.WriteTo(response, peer); err != nil {
+					return err
+				}
+			}
+		})
+		original := net.DefaultResolver
+		net.DefaultResolver = &net.Resolver{PreferGo: true, Dial: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			dialer := net.Dialer{}
+			return dialer.DialContext(ctx, "udp4", connection.LocalAddr().String())
+		}}
+		defer func() { net.DefaultResolver = original }()
+		endpoint, err := modelEndpointFromURL(ctx, "https://model.test/v1")
+		if err != nil {
+			return err
+		}
+		want := []netip.AddrPort{netip.MustParseAddrPort("192.168.1.50:443"), netip.MustParseAddrPort("192.168.1.60:443"), netip.MustParseAddrPort("[fd12::50]:443")}
+		if endpoint.Hostname != "model.test" || !slices.Equal(endpoint.Addresses, want) {
+			return fmt.Errorf("resolved endpoint %+v, want %v", endpoint, want)
+		}
+		rules := newNetworkPolicy(HostNetwork{}, nil, endpoint.Addresses).NFTables()
+		for _, rule := range []string{"ip daddr 192.168.1.50 tcp dport 443 accept", "ip daddr 192.168.1.60 tcp dport 443 accept", "ip6 daddr fd12::50 tcp dport 443 accept"} {
+			if !strings.Contains(rules, rule) {
+				return fmt.Errorf("missing resolved address rule %s", rule)
+			}
+		}
+		if _, err := modelEndpointFromURL(ctx, "https://missing.invalid/v1"); err == nil {
+			return fmt.Errorf("unresolved endpoint did not fail startup")
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }

@@ -27,7 +27,7 @@ func runSandbox(ctx context.Context, invocation Args) error {
 	if err != nil {
 		return err
 	}
-	modelServer, err := configuredModelServer(config.Home, config.Environment, invocation)
+	modelEndpoint, err := configuredModelEndpoint(ctx, config.Home, config.Environment, invocation)
 	if err != nil {
 		return err
 	}
@@ -35,13 +35,13 @@ func runSandbox(ctx context.Context, invocation Args) error {
 	if err != nil {
 		return err
 	}
-	policy := newNetworkPolicy(network, config.ExtraDenied, modelServer)
+	policy := newNetworkPolicy(network, config.ExtraDenied, modelEndpoint.Addresses)
 	runDir, err := os.MkdirTemp(config.State, "run-")
 	if err != nil {
 		return fmt.Errorf("MkdirTemp(): %w", err)
 	}
 	defer os.RemoveAll(runDir)
-	if err := writeRunFiles(runDir, invocation.Mode); err != nil {
+	if err := writeRunFiles(runDir, invocation.Mode, modelEndpoint); err != nil {
 		return err
 	}
 	plan, err := buildSandbox(config, invocation, runDir)
@@ -124,7 +124,7 @@ func bindMount(source, target string, writable bool) string {
 	return strings.TrimSuffix(output.String(), "\n")
 }
 
-func writeRunFiles(runDir string, mode Mode) error {
+func writeRunFiles(runDir string, mode Mode, endpoint ModelEndpoint) error {
 	root := filepath.Join(runDir, "rootfs")
 	// This is a mount skeleton, not an OS image. Executables and libraries come
 	// from read-only host mounts; only the project and Qwen home persist writes.
@@ -138,7 +138,11 @@ func writeRunFiles(runDir string, mode Mode) error {
 			return fmt.Errorf("Symlink(%s): %w", name, err)
 		}
 	}
-	files := map[string]string{"etc/resolv.conf": "nameserver 1.1.1.1\nnameserver 2606:4700:4700::1111\n", "etc/hosts": "127.0.0.1 localhost\n::1 localhost\n",
+	hosts := "127.0.0.1 localhost\n::1 localhost\n"
+	for _, address := range endpoint.Addresses {
+		hosts += fmt.Sprintf("%s %s\n", address.Addr(), endpoint.Hostname)
+	}
+	files := map[string]string{"etc/resolv.conf": "nameserver 1.1.1.1\nnameserver 2606:4700:4700::1111\n", "etc/hosts": hosts,
 		"etc/passwd": "qwen:x:0:0:Qwen:/home/qwen:/usr/bin/bash\n", "etc/group": "qwen:x:0:\n", "etc/hostname": "qwen-isolated\n"}
 	for name, contents := range files {
 		if err := os.WriteFile(filepath.Join(root, name), []byte(contents), 0o600); err != nil {

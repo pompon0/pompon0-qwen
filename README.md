@@ -117,20 +117,26 @@ Public IPv4 and IPv6 egress is allowed. Host addresses, directly connected
 networks, and private/special address ranges are blocked in both families. DNS
 uses `1.1.1.1` and `2606:4700:4700::1111`. Public IPv6 connectivity depends on
 the host's IPv6 routes; the launcher does not disable either address family.
-The launcher derives an exact TCP firewall exception from the selected model's
+The launcher derives exact TCP firewall exceptions from the selected model's
 `baseUrl` in the sandbox's user settings. The Ollama example above automatically
 permits `192.168.1.50:11434`; no separate firewall environment variable is needed.
 Selection uses `security.auth.selectedType` and `model.name`, with `model.baseUrl`
 to distinguish duplicate model IDs. Model-related CLI overrides and forwarded
 environment variables are also considered. Unselected providers grant no access.
 
-Use a literal LAN IPv4 or IPv6 address in `baseUrl`. IPv6 URLs use brackets,
-for example `http://[fd12:3456::50]:11434/v1`. HTTP and HTTPS default to ports 80
-and 443 when no port is specified. Hostnames use normal filtered networking;
-the launcher does not resolve them on the host to grant LAN exceptions. Loopback,
-link-local, and sandbox-subnet endpoints cannot receive an exception. The
-virtual subnets are `10.0.2.0/24` and `fd00:2::/64`; guest addresses differ from
-host addresses so services on the host are not shadowed by the guest.
+`baseUrl` can contain a DNS name or a literal IPv4/IPv6 address. IPv6 URLs use
+brackets, for example `http://[fd12:3456::50]:11434/v1`. The launcher resolves the
+selected hostname using the host's resolver at startup and allows every returned
+IPv4/IPv6 address on the URL's TCP port. HTTP and HTTPS default to ports 80 and
+443. DNS resolution failures abort startup.
+
+The resolved hostname is pinned in the sandbox's `/etc/hosts`, so Qwen uses the
+same addresses as the firewall, including names supplied by LAN DNS or the host's
+hosts file. Relaunch to pick up DNS changes. Address resolution does not translate
+loopback or link-local addresses into host access; the endpoint must still be
+reachable from the container. The virtual subnets are `10.0.2.0/24` and
+`fd00:2::/64`; guest addresses differ from host addresses so services on the host
+are not shadowed by the guest.
 
 Automatic exceptions read the sandbox's user settings, not repository-supplied
 settings. Put the endpoint directly in `baseUrl`; endpoint variable references
@@ -139,8 +145,8 @@ supply credentials to Qwen but are not read by the launcher's endpoint resolver.
 JSON comments in settings are supported. Invalid or ambiguous endpoint settings
 abort startup; repair the sandbox user settings at the host path above.
 
-The exception overrides destination blocks for only the selected address and TCP
-port. It is fixed at startup: relaunch after changing endpoints or switching to
+The exceptions override destination blocks only for the selected endpoint's
+resolved addresses and TCP port. It is fixed at startup: relaunch after changing endpoints or switching to
 a model on a different LAN server. Additional IPv4 and IPv6 prefixes can be
 blocked with `QWEN_ISOLATED_DENY='203.0.113.0/24,fd12:3456::/48'`.
 The well-known NAT64 prefix follows the equivalent IPv4 destination blocks.
@@ -155,7 +161,7 @@ Relaunch after LAN/VPN route changes.
 | `main.go` | CLI entry point, signals, and exit status |
 | `cli.go` | Argument parsing, command validation, model overrides, and help |
 | `config.go` | Git repository discovery, tool discovery, state paths, environment |
-| `network.go` | Host IP addresses, connected routes, and prefix normalization |
+| `network.go` | Model DNS/port resolution, host IP addresses, routes, and prefix normalization |
 | `qwen.go` | npm version selection and cached runtime execution |
 | `qwen_config.go` | Qwen user settings and selected model endpoint resolution |
 | `policy.go` | nftables destination policy and exact model-server TCP exception |
@@ -189,8 +195,8 @@ Initially only a trusted `sleep` process runs. A trusted `podman exec --privileg
 invocation loads nftables rules inside the container's network namespace, then
 Qwen is started by an ordinary `podman exec` with no capabilities. This setup
 privilege belongs to the rootless namespace and never requires host root. Failure
-to install the policy aborts startup. The policy permits public IPv4/IPv6 and one exact
-model-server TCP exception; private, host, directly connected, and extra denied
+to install the policy aborts startup. The policy permits public IPv4/IPv6 and exact
+model-server TCP exceptions for the resolved addresses; private, host, directly connected, and extra denied
 destinations remain blocked in both address families. No host firewall rules are changed.
 
 The launcher always removes its named container after the workload exits, fails,
@@ -215,7 +221,7 @@ and Podman startup/failure/cancellation handling. For actual kernel/network isol
 run the installed executable's `isolation-check` mode on a configured Linux host.
 
 A live integration test creates and removes a rootless container using local test
-servers, checks filesystem/privilege isolation, and verifies IPv4 and IPv6 model TCP-port
+servers, checks filesystem/privilege isolation, and verifies pinned model hostnames and IPv4/IPv6 TCP-port
 exceptions without downloading an image. A test-only IPv6 mapping avoids needing
 a global IPv6 route on the test host:
 

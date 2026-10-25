@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -15,7 +16,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/pompon0/pompon0-qwen/utils"
 	"golang.org/x/sys/unix"
 )
 
@@ -73,10 +73,11 @@ func TestPodmanIntegration(t *testing.T) {
 				}
 			}
 			config.Environment["POMPON_PODMAN_PROBE"] = "1"
-			config.Environment["POMPON_TEST_MODEL"] = modelAddress.String()
+			config.Environment["POMPON_TEST_MODEL"] = net.JoinHostPort("model.test", fmt.Sprint(modelAddress.Port()))
 			config.Environment["POMPON_TEST_DENIED"] = deniedAddress.String()
 			config.Environment["POMPON_TEST_CANARY"] = filepath.Join(root, "host-canary")
-			if err := writeRunFiles(root, ModeIsolationCheck); err != nil {
+			endpoint := ModelEndpoint{Hostname: "model.test", Addresses: []netip.AddrPort{modelAddress}}
+			if err := writeRunFiles(root, ModeIsolationCheck, endpoint); err != nil {
 				t.Fatal(err)
 			}
 			plan, err := buildSandbox(config, Args{Mode: ModeIsolationCheck}, root)
@@ -93,7 +94,7 @@ func TestPodmanIntegration(t *testing.T) {
 					}
 				}
 			}
-			policy := newNetworkPolicy(HostNetwork{Addresses: []netip.Addr{test.target}}, nil, utils.Some(modelAddress))
+			policy := newNetworkPolicy(HostNetwork{Addresses: []netip.Addr{test.target}}, nil, endpoint.Addresses)
 			ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 			defer cancel()
 			if err := supervise(ctx, config.Tools, plan, policy); err != nil {
