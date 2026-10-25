@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"os/exec"
 	"os/signal"
 	"syscall"
 
@@ -31,13 +30,12 @@ Configuration, network policy, and packaging:
   https://github.com/pompon0/pompon0-qwen#readme
 `
 
-type signalError struct {
-	signal syscall.Signal
-}
+// codeError carries the shell exit status for a signal or a terminated workload.
+type codeError int
 
-func (e signalError) Error() string { return "received signal: " + e.signal.String() }
+func (e codeError) Error() string { return fmt.Sprintf("exit status %d", e) }
 
-func (e signalError) exitCode() int { return 128 + int(e.signal) }
+func (e codeError) exitCode() int { return int(e) }
 
 func main() {
 	// Strip group/other permissions from newly created files and directories
@@ -65,22 +63,17 @@ func main() {
 			if err != nil {
 				return utils.IgnoreCancel(err)
 			}
-			return signalError{signal: sig.(syscall.Signal)}
+			return codeError(128 + int(sig.(syscall.Signal)))
 		})
 		return launch(ctx, os.Args[1:])
 	})
-	// The scope joins the signal watcher even when launch returns without a signal.
-	if err == nil {
-		return
+	if err != nil {
+		slog.Error("sandbox failed", slog.Any("error", err))
+		if codeErr, ok := errors.AsType[codeError](err); ok {
+			os.Exit(codeErr.exitCode())
+		}
+		os.Exit(1)
 	}
-	if interrupted, ok := errors.AsType[signalError](err); ok {
-		os.Exit(interrupted.exitCode())
-	}
-	if exited, ok := errors.AsType[*exec.ExitError](err); ok {
-		os.Exit(processExitCode(exited))
-	}
-	slog.Error("sandbox failed", slog.Any("error", err))
-	os.Exit(1)
 }
 
 func launch(ctx context.Context, arguments []string) error {

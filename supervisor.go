@@ -39,6 +39,15 @@ func startProcess(s scope.Scope, cmd *exec.Cmd) (*managedProcess, error) {
 	p := &managedProcess{cmd: cmd, done: make(chan struct{})}
 	s.SpawnBg(func() error {
 		p.err = cmd.Wait()
+		// Normalize at the process boundary so callers need no knowledge of
+		// exec.ExitError or the kernel's separate signal termination status.
+		if exited, ok := errors.AsType[*exec.ExitError](p.err); ok {
+			if status, ok := exited.Sys().(syscall.WaitStatus); ok && status.Signaled() {
+				p.err = codeError(128 + int(status.Signal()))
+			} else {
+				p.err = codeError(exited.ExitCode())
+			}
+		}
 		close(p.done)
 		// Record completion without canceling the owner prematurely. Supervision
 		// decides whether a process exit is expected using p.done and p.err.
@@ -95,7 +104,7 @@ func awaitReady(ctx context.Context, ready *os.File, process *managedProcess, de
 			}
 			return nil
 		case <-process.done:
-			return fmt.Errorf("%s exited before becoming ready (status %d)", description, processExitCode(process.err))
+			return fmt.Errorf("%s exited before becoming ready (%v)", description, process.cmd.ProcessState)
 		case <-timer.C:
 			return fmt.Errorf("%s startup timed out", description)
 		case <-ctx.Done():
@@ -155,7 +164,7 @@ func superviseInScope(ctx context.Context, s scope.Scope, tools Tools, plan Sand
 		for _, process := range processes {
 			process.stop()
 		}
-		_, workloadExited := errors.AsType[*exec.ExitError](err)
+		_, workloadExited := errors.AsType[codeError](err)
 		if err != nil && !workloadExited {
 			if contents, readErr := os.ReadFile(logPath); readErr == nil && strings.TrimSpace(string(contents)) != "" {
 				slog.ErrorContext(ctx, "slirp4netns diagnostics", slog.String("output", strings.TrimSpace(string(contents))))
@@ -226,17 +235,4 @@ func superviseInScope(ctx context.Context, s scope.Scope, tools Tools, plan Sand
 	case <-ctx.Done():
 		return ctx.Err()
 	}
-}
-
-func processExitCode(err error) int {
-	if err == nil {
-		return 0
-	}
-	if exitError, ok := errors.AsType[*exec.ExitError](err); ok {
-		if status, ok := exitError.Sys().(syscall.WaitStatus); ok && status.Signaled() {
-			return 128 + int(status.Signal())
-		}
-		return exitError.ExitCode()
-	}
-	return 1
 }

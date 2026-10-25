@@ -53,8 +53,42 @@ func TestSupervisorSuccessfulHandshakeAndExitStatus(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 	err := supervise(ctx, tools, plan, dir)
-	if exited, ok := errors.AsType[*exec.ExitError](err); !ok || exited.ExitCode() != 23 {
+	if exited, ok := errors.AsType[codeError](err); !ok || exited.exitCode() != 23 {
 		t.Fatalf("expected workload exit status 23, got %v", err)
+	}
+}
+
+func TestProcessWaitNormalizesExitStatus(t *testing.T) {
+	for _, test := range []struct {
+		name, command string
+		want          int
+	}{
+		{name: "success", command: "exit 0", want: 0},
+		{name: "failure", command: "exit 23", want: 23},
+		{name: "signal", command: "kill -TERM $$", want: 143},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := scope.Run(t.Context(), func(ctx context.Context, s scope.Scope) error {
+				process, err := startProcess(s, exec.Command("/bin/bash", "-c", test.command))
+				if err != nil {
+					return err
+				}
+				defer process.stop()
+				if _, _, err := utils.RecvOrClosed(ctx, process.done); err != nil {
+					return err
+				}
+				return process.err
+			})
+			if test.want == 0 {
+				if err != nil {
+					t.Fatalf("successful process returned %v", err)
+				}
+				return
+			}
+			if exited, ok := errors.AsType[codeError](err); !ok || exited.exitCode() != test.want {
+				t.Fatalf("expected codeError(%d), got %v", test.want, err)
+			}
+		})
 	}
 }
 

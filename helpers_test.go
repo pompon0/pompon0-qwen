@@ -17,8 +17,9 @@ func TestMain(m *testing.M) {
 	if handled, err := runInternalHelper(os.Args[1:]); handled {
 		if err != nil {
 			slog.Error("internal helper failed", slog.Any("error", err))
+			os.Exit(1)
 		}
-		os.Exit(processExitCode(err))
+		os.Exit(0)
 	}
 	os.Exit(m.Run())
 }
