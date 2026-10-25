@@ -59,7 +59,9 @@ func buildSandbox(config Config, invocation Args, runDir string) (SandboxPlan, e
 		// Rootless Podman's namespace root maps to the invoking host user. A single
 		// UID/GID mapping suffices: the rootfs has no image or other user accounts.
 		"--userns=host", "--user=0:0", "--pid=private", "--ipc=private", "--uts=private",
-		"--network=pasta:--ipv4-only,-a,10.0.2.100,-n,24,-g,10.0.2.2,--no-map-gw",
+		// Separate guest addresses prevent host model servers being shadowed by
+		// pasta's default of copying the host's own addresses into the container.
+		"--network=pasta:-a,10.0.2.100,-n,24,-g,10.0.2.2,-a,fd00:2::100,-g,fd00:2::2,--no-map-gw",
 		"--dns=none", "--no-hosts", "--http-proxy=false", "--log-driver=none", "--init",
 		"--tmpfs=/tmp:rw,nosuid,nodev", "--tmpfs=/run:rw,nosuid,nodev",
 		"--workdir", config.WorkingDirectory,
@@ -136,7 +138,7 @@ func writeRunFiles(runDir string, mode Mode) error {
 			return fmt.Errorf("Symlink(%s): %w", name, err)
 		}
 	}
-	files := map[string]string{"etc/resolv.conf": "nameserver 1.1.1.1\n", "etc/hosts": "127.0.0.1 localhost\n",
+	files := map[string]string{"etc/resolv.conf": "nameserver 1.1.1.1\nnameserver 2606:4700:4700::1111\n", "etc/hosts": "127.0.0.1 localhost\n::1 localhost\n",
 		"etc/passwd": "qwen:x:0:0:Qwen:/home/qwen:/usr/bin/bash\n", "etc/group": "qwen:x:0:\n", "etc/hostname": "qwen-isolated\n"}
 	for name, contents := range files {
 		if err := os.WriteFile(filepath.Join(root, name), []byte(contents), 0o600); err != nil {

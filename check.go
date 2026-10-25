@@ -66,7 +66,7 @@ func runIsolationChecks(ctx context.Context, version QwenVersion, canary string,
 	if err := verifyEgress(ctx, probeTCP); err != nil {
 		return err
 	}
-	fmt.Fprintln(output, "PASS: denied destination rejected; public IPv4 TCP works.")
+	fmt.Fprintln(output, "PASS: denied destination rejected; public TCP works.")
 	fmt.Fprintln(output, "PASS: host canary hidden; /usr read-only; writable project/home; no capabilities or further user namespaces.")
 	return nil
 }
@@ -140,11 +140,14 @@ func verifyWritableDirectory(path string) error {
 type tcpProbe func(context.Context, netip.AddrPort) error
 
 var deniedProbeAddress = netip.MustParseAddrPort("198.18.0.1:9")
+var deniedIPv6ProbeAddress = netip.MustParseAddrPort("[2001:db8::1]:9")
+var publicIPv6ProbeAddress = netip.MustParseAddrPort("[2606:4700:4700::1111]:443")
+
 var publicProbeAddress = netip.MustParseAddrPort("1.1.1.1:443")
 
 func probeTCP(ctx context.Context, address netip.AddrPort) error {
 	dialer := net.Dialer{Timeout: 8 * time.Second}
-	connection, err := dialer.DialContext(ctx, "tcp4", address.String())
+	connection, err := dialer.DialContext(ctx, "tcp", address.String())
 	if err != nil {
 		return err
 	}
@@ -152,15 +155,24 @@ func probeTCP(ctx context.Context, address netip.AddrPort) error {
 }
 
 func verifyEgress(ctx context.Context, probe tcpProbe) error {
-	err := probe(ctx, deniedProbeAddress)
-	if err == nil {
-		return errors.New("FAIL: blocked destination was reachable")
+	for _, address := range []netip.AddrPort{deniedProbeAddress, deniedIPv6ProbeAddress} {
+		err := probe(ctx, address)
+		if err == nil {
+			return fmt.Errorf("FAIL: blocked destination %s was reachable", address)
+		}
+		if !errors.Is(err, unix.EACCES) && !errors.Is(err, unix.EPERM) && !errors.Is(err, unix.EHOSTUNREACH) && !errors.Is(err, unix.ENETUNREACH) {
+			return fmt.Errorf("FAIL: blocked destination %s was not explicitly rejected: %w", address, err)
+		}
 	}
-	if !errors.Is(err, unix.EACCES) && !errors.Is(err, unix.EPERM) && !errors.Is(err, unix.EHOSTUNREACH) && !errors.Is(err, unix.ENETUNREACH) {
-		return fmt.Errorf("FAIL: blocked destination was not explicitly rejected: %w", err)
+	var failures []error
+	// A host may have only one working address family. Accept public connectivity
+	// over either, while checking destination restrictions for both above.
+	for _, address := range []netip.AddrPort{publicProbeAddress, publicIPv6ProbeAddress} {
+		if err := probe(ctx, address); err != nil {
+			failures = append(failures, fmt.Errorf("probeTCP(%s): %w", address, err))
+		} else {
+			return nil
+		}
 	}
-	if err := probe(ctx, publicProbeAddress); err != nil {
-		return fmt.Errorf("FAIL: public IPv4 TCP: %w", err)
-	}
-	return nil
+	return fmt.Errorf("FAIL: public TCP: %w", errors.Join(failures...))
 }

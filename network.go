@@ -15,10 +15,13 @@ import (
 	"github.com/pompon0/pompon0-qwen/utils"
 )
 
-const networkSubnet = "10.0.2.0/24"
+var networkSubnets = [...]netip.Prefix{
+	netip.MustParsePrefix("10.0.2.0/24"),
+	netip.MustParsePrefix("fd00:2::/64"),
+}
 
 // modelServerFromURL never resolves hostnames on the host. Public DNS names
-// continue to use normal filtered egress; LAN exceptions require a literal IPv4.
+// continue to use normal filtered egress; LAN exceptions require a literal IP address.
 // None means the endpoint needs no explicit model-server exception.
 func modelServerFromURL(value string) (utils.Option[netip.AddrPort], error) {
 	if value == "" {
@@ -48,36 +51,53 @@ func modelServerFromURL(value string) (utils.Option[netip.AddrPort], error) {
 	ip, err := netip.ParseAddr(endpoint.Hostname())
 	if err != nil {
 		if strings.EqualFold(endpoint.Hostname(), "localhost") || strings.HasSuffix(strings.ToLower(endpoint.Hostname()), ".localhost") {
-			return utils.None[netip.AddrPort](), fmt.Errorf("model baseUrl must use a LAN/public IPv4 address instead of localhost")
+			return utils.None[netip.AddrPort](), fmt.Errorf("model baseUrl must use a LAN/public IP address instead of localhost")
 		}
 		return utils.None[netip.AddrPort](), nil
 	}
-	if !ip.Is4() {
-		return utils.None[netip.AddrPort](), fmt.Errorf("IPv6 model endpoints are not supported; use a LAN/public IPv4 address")
+	ip = ip.Unmap()
+	if ip.Zone() != "" {
+		return utils.None[netip.AddrPort](), fmt.Errorf("model baseUrl must not contain an IPv6 zone")
 	}
 	if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsMulticast() || ip.IsUnspecified() || netip.MustParsePrefix("240.0.0.0/4").Contains(ip) {
-		return utils.None[netip.AddrPort](), fmt.Errorf("model baseUrl must use a LAN/public IPv4 address")
+		return utils.None[netip.AddrPort](), fmt.Errorf("model baseUrl must use a LAN/public IP address")
 	}
-	if netip.MustParsePrefix(networkSubnet).Contains(ip) {
-		return utils.None[netip.AddrPort](), fmt.Errorf("model baseUrl overlaps the sandbox virtual subnet 10.0.2.0/24")
+	for _, subnet := range networkSubnets {
+		if subnet.Contains(ip) {
+			return utils.None[netip.AddrPort](), fmt.Errorf("model baseUrl overlaps the sandbox virtual subnet %s", subnet)
+		}
 	}
 	return utils.Some(netip.AddrPortFrom(ip, uint16(port))), nil
 }
 
-func parseIPv4Prefix(value string) (netip.Prefix, error) {
-	// iproute2 may print a host route without /32.
+func parsePrefix(value string) (netip.Prefix, error) {
+	// iproute2 may print host routes without a prefix length (/32 or /128).
 	if !strings.Contains(value, "/") {
-		value += "/32"
+		address, err := netip.ParseAddr(value)
+		if err != nil || address.Zone() != "" {
+			return netip.Prefix{}, fmt.Errorf("invalid IP address %q", value)
+		}
+		address = address.Unmap()
+		return netip.PrefixFrom(address, address.BitLen()), nil
 	}
 	prefix, err := netip.ParsePrefix(value)
-	if err != nil || !prefix.Addr().Is4() {
-		return netip.Prefix{}, fmt.Errorf("invalid IPv4 prefix %q", value)
+	if err != nil {
+		return netip.Prefix{}, fmt.Errorf("ParsePrefix(%q): %w", value, err)
+	}
+	if prefix.Addr().Is4In6() {
+		if prefix.Bits() < 96 {
+			return netip.Prefix{}, fmt.Errorf("IPv4-mapped prefix %q must be /96 or longer", value)
+		}
+		prefix = netip.PrefixFrom(prefix.Addr().Unmap(), prefix.Bits()-96)
 	}
 	return prefix.Masked(), nil
 }
 
 type hostRoute struct {
 	Scope       string `json:"scope"`
+	Device      string `json:"dev"`
+	Gateway     string `json:"gateway"`
+	Type        string `json:"type"`
 	Destination string `json:"dst"`
 }
 
@@ -95,19 +115,23 @@ type HostNetwork struct {
 
 func discoverNetwork(ctx context.Context, ip string) (HostNetwork, error) {
 	var network HostNetwork
-	var routes []hostRoute
-	if err := readIPJSON(ctx, ip, &routes, "route", "show", "table", "all"); err != nil {
-		return network, err
-	}
-	for _, route := range routes {
-		if route.Scope != "link" || route.Destination == "" || route.Destination == "default" {
-			continue
-		}
-		prefix, err := parseIPv4Prefix(route.Destination)
-		if err != nil {
+	for _, family := range []string{"-4", "-6"} {
+		var routes []hostRoute
+		if err := readIPJSON(ctx, ip, &routes, family, "route", "show", "table", "all"); err != nil {
 			return network, err
 		}
-		network.LinkRoutes = append(network.LinkRoutes, prefix)
+		for _, route := range routes {
+			// IPv6 connected routes often omit scope. A unicast route directly
+			// through a device, without a gateway, identifies the connected prefix.
+			if route.Destination == "" || route.Destination == "default" || route.Device == "" || route.Gateway != "" || route.Scope == "host" || (route.Type != "" && route.Type != "unicast") {
+				continue
+			}
+			prefix, err := parsePrefix(route.Destination)
+			if err != nil {
+				return network, err
+			}
+			network.LinkRoutes = append(network.LinkRoutes, prefix)
+		}
 	}
 	var interfaces []hostInterface
 	if err := readIPJSON(ctx, ip, &interfaces, "address", "show"); err != nil {
@@ -115,21 +139,21 @@ func discoverNetwork(ctx context.Context, ip string) (HostNetwork, error) {
 	}
 	for _, iface := range interfaces {
 		for _, address := range iface.Addresses {
-			if address.Family != "inet" {
+			if address.Family != "inet" && address.Family != "inet6" {
 				continue
 			}
 			ip, err := netip.ParseAddr(address.Local)
-			if err != nil || !ip.Is4() {
-				return network, fmt.Errorf("invalid host IPv4 address %q", address.Local)
+			if err != nil {
+				return network, fmt.Errorf("invalid host IP address %q", address.Local)
 			}
-			network.Addresses = append(network.Addresses, ip)
+			network.Addresses = append(network.Addresses, ip.Unmap())
 		}
 	}
 	return network, nil
 }
 
 func readIPJSON(ctx context.Context, ip string, destination any, args ...string) error {
-	cmd := exec.CommandContext(ctx, ip, append([]string{"-j", "-4"}, args...)...)
+	cmd := exec.CommandContext(ctx, ip, append([]string{"-j"}, args...)...)
 	output, err := cmd.Output()
 	if err != nil {
 		return fmt.Errorf("inspect host network (%s): %w", strings.Join(args, " "), err)

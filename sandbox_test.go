@@ -21,6 +21,11 @@ func TestPodmanPlan(t *testing.T) {
 				t.Errorf("missing %s", flag)
 			}
 		}
+		for _, argument := range plan.RunArguments {
+			if strings.Contains(argument, "--ipv4-only") || strings.Contains(argument, "--ipv6-only") {
+				t.Fatal("sandbox must allow both IP families")
+			}
+		}
 		if !containsSequence(plan.RunArguments, []string{"--", "/run-dir/rootfs", "/usr/bin/sleep", "infinity"}) {
 			t.Fatal("container must start only trusted sleep")
 		}

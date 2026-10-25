@@ -38,49 +38,71 @@ func TestPodmanIntegration(t *testing.T) {
 	if !hostIP.IsValid() {
 		t.Fatal("no host IPv4 address available")
 	}
-	server := func() *httptest.Server {
-		t.Helper()
-		listener, err := net.Listen("tcp4", net.JoinHostPort(hostIP.String(), "0"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		result := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = io.WriteString(w, "model endpoint") }))
-		result.Listener.Close()
-		result.Listener = listener
-		result.Start()
-		t.Cleanup(result.Close)
-		return result
-	}
-	model, other := server(), server()
-	modelAddress := netip.MustParseAddrPort(model.Listener.Addr().String())
-	directory := t.TempDir()
-	root := filepath.Join(directory, "run")
-	config := Config{Project: filepath.Join(directory, "project"), Home: filepath.Join(directory, "home"), WorkingDirectory: "/workspace", Tools: Tools{Podman: "/usr/bin/podman", NFT: "/usr/bin/nft", IP: "/usr/bin/ip"}, Environment: sandboxEnvironment(func(string) (string, bool) { return "", false })}
-	for _, path := range []string{config.Project, config.Home, root} {
-		if err := os.MkdirAll(path, 0o700); err != nil {
-			t.Fatal(err)
-		}
-	}
-	config.Environment["POMPON_PODMAN_PROBE"] = "1"
-	config.Environment["POMPON_TEST_MODEL"] = modelAddress.String()
-	config.Environment["POMPON_TEST_DENIED"] = other.Listener.Addr().String()
-	config.Environment["POMPON_TEST_CANARY"] = filepath.Join(root, "host-canary")
-	if err := writeRunFiles(root, ModeIsolationCheck); err != nil {
-		t.Fatal(err)
-	}
-	plan, err := buildSandbox(config, Args{Mode: ModeIsolationCheck}, root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	plan.Workload = []string{sandboxCheckerPath, "-test.run=^TestPodmanProbe$", "-test.v"}
-	policy := newNetworkPolicy(HostNetwork{Addresses: []netip.Addr{hostIP}}, nil, utils.Some(modelAddress))
-	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
-	defer cancel()
-	if err := supervise(ctx, config.Tools, plan, policy); err != nil {
-		t.Fatal(err)
-	}
-	if err := exec.CommandContext(ctx, config.Tools.Podman, "--remote=false", "container", "exists", string(plan.Name)).Run(); err == nil {
-		t.Fatal("sandbox container was left running")
+	for _, test := range []struct {
+		name, network string
+		bind, target  netip.Addr
+		pastaOptions  string
+	}{
+		{name: "IPv4", network: "tcp4", bind: hostIP, target: hostIP},
+		{name: "IPv6", network: "tcp6", bind: netip.IPv6Loopback(), target: netip.MustParseAddr("fd00:57::1"),
+			pastaOptions: ",--map-host-loopback,fd00:57::1"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server := func() *httptest.Server {
+				t.Helper()
+				listener, err := net.Listen(test.network, net.JoinHostPort(test.bind.String(), "0"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				result := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = io.WriteString(w, "model endpoint") }))
+				result.Listener.Close()
+				result.Listener = listener
+				result.Start()
+				t.Cleanup(result.Close)
+				return result
+			}
+			model, other := server(), server()
+			modelAddress := netip.AddrPortFrom(test.target, netip.MustParseAddrPort(model.Listener.Addr().String()).Port())
+			deniedAddress := netip.AddrPortFrom(test.target, netip.MustParseAddrPort(other.Listener.Addr().String()).Port())
+			directory := t.TempDir()
+			root := filepath.Join(directory, "run")
+			config := Config{Project: filepath.Join(directory, "project"), Home: filepath.Join(directory, "home"), WorkingDirectory: "/workspace", Tools: Tools{Podman: "/usr/bin/podman", NFT: "/usr/bin/nft", IP: "/usr/bin/ip"}, Environment: sandboxEnvironment(func(string) (string, bool) { return "", false })}
+			for _, path := range []string{config.Project, config.Home, root} {
+				if err := os.MkdirAll(path, 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			config.Environment["POMPON_PODMAN_PROBE"] = "1"
+			config.Environment["POMPON_TEST_MODEL"] = modelAddress.String()
+			config.Environment["POMPON_TEST_DENIED"] = deniedAddress.String()
+			config.Environment["POMPON_TEST_CANARY"] = filepath.Join(root, "host-canary")
+			if err := writeRunFiles(root, ModeIsolationCheck); err != nil {
+				t.Fatal(err)
+			}
+			plan, err := buildSandbox(config, Args{Mode: ModeIsolationCheck}, root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			plan.Workload = []string{sandboxCheckerPath, "-test.run=^TestPodmanProbe$", "-test.v"}
+			// The test-only IPv6 mapping reaches host loopback through a ULA. This
+			// exercises real IPv6 packets without requiring a global host IPv6 route.
+			if test.pastaOptions != "" {
+				for i, argument := range plan.RunArguments {
+					if strings.HasPrefix(argument, "--network=pasta:") {
+						plan.RunArguments[i] += test.pastaOptions
+					}
+				}
+			}
+			policy := newNetworkPolicy(HostNetwork{Addresses: []netip.Addr{test.target}}, nil, utils.Some(modelAddress))
+			ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+			defer cancel()
+			if err := supervise(ctx, config.Tools, plan, policy); err != nil {
+				t.Fatal(err)
+			}
+			if err := exec.CommandContext(ctx, config.Tools.Podman, "--remote=false", "container", "exists", string(plan.Name)).Run(); err == nil {
+				t.Fatal("sandbox container was left running")
+			}
+		})
 	}
 }
 

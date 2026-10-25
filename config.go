@@ -72,7 +72,7 @@ func discoverConfig() (Config, error) {
 		return c, err
 	}
 	for value := range strings.FieldsSeq(strings.ReplaceAll(os.Getenv("QWEN_ISOLATED_DENY"), ",", " ")) {
-		prefix, err := parseIPv4Prefix(value)
+		prefix, err := parsePrefix(value)
 		if err != nil {
 			return c, fmt.Errorf("QWEN_ISOLATED_DENY: %w", err)
 		}

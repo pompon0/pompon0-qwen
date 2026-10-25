@@ -52,22 +52,27 @@ func TestVerifyWritableDirectoryCleansUp(t *testing.T) {
 
 func TestVerifyEgress(t *testing.T) {
 	for _, test := range []struct {
-		name                         string
-		deniedError, publicError     error
-		wantSuccess, wantPublicProbe bool
+		name                                      string
+		deniedError, publicError, publicIPv6Error error
+		wantSuccess, wantPublicProbe              bool
+		tryIPv6                                   bool
 	}{
 		{name: "denied and public", deniedError: &net.OpError{Op: "dial", Net: "tcp", Err: unix.EHOSTUNREACH}, wantSuccess: true, wantPublicProbe: true},
 		{name: "permission denied", deniedError: unix.EACCES, wantSuccess: true, wantPublicProbe: true},
 		{name: "blocked destination reachable"},
 		{name: "timeout is not proof of filtering", deniedError: context.DeadlineExceeded},
-		{name: "public internet unavailable", deniedError: unix.EPERM, publicError: fmt.Errorf("dial: %w", unix.ENETUNREACH), wantPublicProbe: true},
+		{name: "public internet unavailable", deniedError: unix.EPERM, publicError: fmt.Errorf("dial: %w", unix.ENETUNREACH), publicIPv6Error: unix.ENETUNREACH, wantPublicProbe: true, tryIPv6: true},
+		{name: "IPv6-only host", deniedError: unix.EPERM, publicError: unix.ENETUNREACH, wantSuccess: true, wantPublicProbe: true, tryIPv6: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			var addresses []netip.AddrPort
 			err := verifyEgress(t.Context(), func(_ context.Context, address netip.AddrPort) error {
 				addresses = append(addresses, address)
-				if address == deniedProbeAddress {
+				if address == deniedProbeAddress || address == deniedIPv6ProbeAddress {
 					return test.deniedError
+				}
+				if address == publicIPv6ProbeAddress {
+					return test.publicIPv6Error
 				}
 				return test.publicError
 			})
@@ -76,7 +81,10 @@ func TestVerifyEgress(t *testing.T) {
 			}
 			want := []netip.AddrPort{deniedProbeAddress}
 			if test.wantPublicProbe {
-				want = append(want, publicProbeAddress)
+				want = append(want, deniedIPv6ProbeAddress, publicProbeAddress)
+			}
+			if test.tryIPv6 {
+				want = append(want, publicIPv6ProbeAddress)
 			}
 			if !slices.Equal(addresses, want) {
 				t.Fatalf("probed %v, want %v", addresses, want)

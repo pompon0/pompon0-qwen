@@ -113,8 +113,10 @@ and uses the host `TERM`.
 
 ### Network access
 
-Public IPv4 egress is allowed. Host addresses, directly connected networks,
-private/special IPv4 ranges, and IPv6 egress are blocked. DNS uses `1.1.1.1`.
+Public IPv4 and IPv6 egress is allowed. Host addresses, directly connected
+networks, and private/special address ranges are blocked in both families. DNS
+uses `1.1.1.1` and `2606:4700:4700::1111`. Public IPv6 connectivity depends on
+the host's IPv6 routes; the launcher does not disable either address family.
 The launcher derives an exact TCP firewall exception from the selected model's
 `baseUrl` in the sandbox's user settings. The Ollama example above automatically
 permits `192.168.1.50:11434`; no separate firewall environment variable is needed.
@@ -122,10 +124,13 @@ Selection uses `security.auth.selectedType` and `model.name`, with `model.baseUr
 to distinguish duplicate model IDs. Model-related CLI overrides and forwarded
 environment variables are also considered. Unselected providers grant no access.
 
-Use a literal LAN IPv4 address in `baseUrl`. HTTP and HTTPS default to ports 80
+Use a literal LAN IPv4 or IPv6 address in `baseUrl`. IPv6 URLs use brackets,
+for example `http://[fd12:3456::50]:11434/v1`. HTTP and HTTPS default to ports 80
 and 443 when no port is specified. Hostnames use normal filtered networking;
 the launcher does not resolve them on the host to grant LAN exceptions. Loopback,
-link-local, IPv6, and sandbox-subnet endpoints cannot receive an exception.
+link-local, and sandbox-subnet endpoints cannot receive an exception. The
+virtual subnets are `10.0.2.0/24` and `fd00:2::/64`; guest addresses differ from
+host addresses so services on the host are not shadowed by the guest.
 
 Automatic exceptions read the sandbox's user settings, not repository-supplied
 settings. Put the endpoint directly in `baseUrl`; endpoint variable references
@@ -136,8 +141,11 @@ abort startup; repair the sandbox user settings at the host path above.
 
 The exception overrides destination blocks for only the selected address and TCP
 port. It is fixed at startup: relaunch after changing endpoints or switching to
-a model on a different LAN server. Additional IPv4 prefixes can be blocked with
-`QWEN_ISOLATED_DENY='203.0.113.0/24,198.51.100.0/24'`.
+a model on a different LAN server. Additional IPv4 and IPv6 prefixes can be
+blocked with `QWEN_ISOLATED_DENY='203.0.113.0/24,fd12:3456::/48'`.
+The well-known NAT64 prefix follows the equivalent IPv4 destination blocks.
+IPv6 control traffic needed for neighbor/router discovery and path-MTU errors
+is allowed without granting TCP/UDP access to blocked destinations.
 Relaunch after LAN/VPN route changes.
 
 ## Code layout
@@ -147,7 +155,7 @@ Relaunch after LAN/VPN route changes.
 | `main.go` | CLI entry point, signals, and exit status |
 | `cli.go` | Argument parsing, command validation, model overrides, and help |
 | `config.go` | Git repository discovery, tool discovery, state paths, environment |
-| `network.go` | Host IPv4 addresses, connected routes, and prefix normalization |
+| `network.go` | Host IP addresses, connected routes, and prefix normalization |
 | `qwen.go` | npm version selection and cached runtime execution |
 | `qwen_config.go` | Qwen user settings and selected model endpoint resolution |
 | `policy.go` | nftables destination policy and exact model-server TCP exception |
@@ -181,9 +189,9 @@ Initially only a trusted `sleep` process runs. A trusted `podman exec --privileg
 invocation loads nftables rules inside the container's network namespace, then
 Qwen is started by an ordinary `podman exec` with no capabilities. This setup
 privilege belongs to the rootless namespace and never requires host root. Failure
-to install the policy aborts startup. The policy permits public IPv4 and one exact
-model-server TCP exception; private, host, directly connected, extra denied, and
-IPv6 destinations remain blocked. No host firewall rules are changed.
+to install the policy aborts startup. The policy permits public IPv4/IPv6 and one exact
+model-server TCP exception; private, host, directly connected, and extra denied
+destinations remain blocked in both address families. No host firewall rules are changed.
 
 The launcher always removes its named container after the workload exits, fails,
 or is canceled. Podman owns the pasta/runtime processes and namespace teardown.
@@ -207,8 +215,9 @@ and Podman startup/failure/cancellation handling. For actual kernel/network isol
 run the installed executable's `isolation-check` mode on a configured Linux host.
 
 A live integration test creates and removes a rootless container using local test
-servers, checks filesystem/privilege isolation, and verifies the model TCP-port
-exception without downloading an image:
+servers, checks filesystem/privilege isolation, and verifies IPv4 and IPv6 model TCP-port
+exceptions without downloading an image. A test-only IPv6 mapping avoids needing
+a global IPv6 route on the test host:
 
 ```sh
 POMPON_PODMAN_INTEGRATION=1 go test -run '^TestPodmanIntegration$' -v .
