@@ -56,10 +56,6 @@ func TestPodmanIntegration(t *testing.T) {
 	directory := t.TempDir()
 	root := filepath.Join(directory, "run")
 	config := Config{Project: filepath.Join(directory, "project"), Home: filepath.Join(directory, "home"), WorkingDirectory: "/workspace", Tools: Tools{Podman: "/usr/bin/podman", NFT: "/usr/bin/nft", IP: "/usr/bin/ip"}, Environment: sandboxEnvironment(func(string) (string, bool) { return "", false })}
-	config.Launcher, err = os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
 	for _, path := range []string{config.Project, config.Home, root} {
 		if err := os.MkdirAll(path, 0o700); err != nil {
 			t.Fatal(err)
@@ -69,7 +65,7 @@ func TestPodmanIntegration(t *testing.T) {
 	config.Environment["POMPON_TEST_MODEL"] = modelAddress.String()
 	config.Environment["POMPON_TEST_DENIED"] = other.Listener.Addr().String()
 	config.Environment["POMPON_TEST_CANARY"] = filepath.Join(root, "host-canary")
-	if err := writeRunFiles(root); err != nil {
+	if err := writeRunFiles(root, ModeIsolationCheck); err != nil {
 		t.Fatal(err)
 	}
 	plan, err := buildSandbox(config, Args{Mode: ModeIsolationCheck}, root)

@@ -29,9 +29,8 @@ func supervise(ctx context.Context, tools Tools, plan SandboxPlan, policy Networ
 	// Cleanup also covers partial create/setup failures. Killing an attached
 	// Podman CLI alone does not guarantee that its container has stopped.
 	defer func() {
-		cleanupCtx, cancel := context.WithTimeout(context.Background(), controlTimeout)
-		defer cancel()
-		if _, cleanupErr := podmanControl(cleanupCtx, tools, strings.NewReader(""), "rm", "--force", "--ignore", "--time", "3", string(plan.Name)); cleanupErr != nil {
+		// podmanControl supplies the timeout; cleanup must outlive cancellation.
+		if _, cleanupErr := podmanControl(context.Background(), tools, strings.NewReader(""), "rm", "--force", "--ignore", "--time", "3", string(plan.Name)); cleanupErr != nil {
 			err = errors.Join(err, fmt.Errorf("remove sandbox container: %w", cleanupErr))
 		}
 	}()

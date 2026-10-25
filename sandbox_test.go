@@ -10,7 +10,7 @@ import (
 )
 
 func TestPodmanPlan(t *testing.T) {
-	config := Config{Project: "/host/project, with spaces", Home: "/host/home", WorkingDirectory: "/workspace/sub", Launcher: "/host/launcher", Environment: map[string]string{"HOME": "/home/qwen", "PATH": "/usr/bin"}}
+	config := Config{Project: "/host/project, with spaces", Home: "/host/home", WorkingDirectory: "/workspace/sub", Environment: map[string]string{"HOME": "/home/qwen", "PATH": "/usr/bin"}}
 	for _, mode := range []Mode{ModeQwen, ModeIsolationCheck} {
 		plan, err := buildSandbox(config, Args{Mode: mode, Version: "0.26.1", Arguments: []string{"--model", "local"}}, "/run-dir")
 		if err != nil {
@@ -67,7 +67,7 @@ func TestPodmanPlan(t *testing.T) {
 
 func TestMinimalRootfs(t *testing.T) {
 	directory := t.TempDir()
-	if err := writeRunFiles(directory); err != nil {
+	if err := writeRunFiles(directory, ModeQwen); err != nil {
 		t.Fatal(err)
 	}
 	root := filepath.Join(directory, "rootfs")
@@ -80,6 +80,22 @@ func TestMinimalRootfs(t *testing.T) {
 	entries, err := os.ReadDir(filepath.Join(root, "usr"))
 	if err != nil || len(entries) != 0 {
 		t.Fatal("rootfs must not contain an OS installation")
+	}
+	if _, err := os.Stat(filepath.Join(directory, "host-canary")); !os.IsNotExist(err) {
+		t.Fatalf("normal launches must not create diagnostic files: %v", err)
+	}
+}
+
+func TestIsolationCheckCreatesHostCanary(t *testing.T) {
+	directory := t.TempDir()
+	if err := writeRunFiles(directory, ModeIsolationCheck); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(directory, "host-canary")); err != nil {
+		t.Fatal("diagnostics require an existing host canary", err)
+	}
+	if _, err := os.Stat(filepath.Join(directory, "rootfs", "host-canary")); !os.IsNotExist(err) {
+		t.Fatalf("host canary must stay outside the rootfs: %v", err)
 	}
 }
 

@@ -7,8 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-
-	"github.com/pompon0/pompon0-qwen/utils"
 )
 
 // Tools are resolved on the host before entering any namespace.
@@ -18,9 +16,7 @@ type Tools struct {
 
 type Config struct {
 	Project, WorkingDirectory, State, Home string
-	Launcher                               string
 	Tools                                  Tools
-	ModelServer                            utils.Option[ModelServer]
 	ExtraDenied                            []netip.Prefix
 	Environment                            map[string]string
 }
@@ -68,19 +64,8 @@ func discoverConfig() (Config, error) {
 	if err != nil {
 		return c, err
 	}
-	c.Launcher, err = os.Executable()
-	if err != nil {
-		return c, err
-	}
-	c.Launcher, err = filepath.EvalSymlinks(c.Launcher)
-	if err != nil {
-		return c, err
-	}
 	if inside(c.State, c.Project) {
 		return c, fmt.Errorf("sandbox state must be outside the project")
-	}
-	if inside(c.Launcher, c.Project) || inside(c.Launcher, c.State) {
-		return c, fmt.Errorf("install this launcher outside the project and sandbox state")
 	}
 	c.Home = filepath.Join(c.State, "home")
 	if err := os.MkdirAll(c.Home, 0o700); err != nil {

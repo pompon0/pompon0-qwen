@@ -27,7 +27,7 @@ func runSandbox(ctx context.Context, invocation Args) error {
 	if err != nil {
 		return err
 	}
-	config.ModelServer, err = configuredModelServer(config.Home, config.Environment, invocation)
+	modelServer, err := configuredModelServer(config.Home, config.Environment, invocation)
 	if err != nil {
 		return err
 	}
@@ -35,13 +35,13 @@ func runSandbox(ctx context.Context, invocation Args) error {
 	if err != nil {
 		return err
 	}
-	policy := newNetworkPolicy(network, config.ExtraDenied, config.ModelServer)
+	policy := newNetworkPolicy(network, config.ExtraDenied, modelServer)
 	runDir, err := os.MkdirTemp(config.State, "run-")
 	if err != nil {
 		return fmt.Errorf("MkdirTemp(): %w", err)
 	}
 	defer os.RemoveAll(runDir)
-	if err := writeRunFiles(runDir); err != nil {
+	if err := writeRunFiles(runDir, invocation.Mode); err != nil {
 		return err
 	}
 	plan, err := buildSandbox(config, invocation, runDir)
@@ -90,10 +90,11 @@ func buildSandbox(config Config, invocation Args, runDir string) (SandboxPlan, e
 		workload = qwenCommand(invocation.Version, invocation.Arguments)
 	case ModeIsolationCheck:
 		// The diagnostic binary is exposed only for the explicit isolation check.
-		if config.Launcher == "" {
-			return SandboxPlan{}, fmt.Errorf("isolation-check requires the launcher executable")
+		launcher, err := os.Executable()
+		if err != nil {
+			return SandboxPlan{}, fmt.Errorf("Executable(): %w", err)
 		}
-		args = append(args, "--mount", bindMount(config.Launcher, sandboxCheckerPath, false))
+		args = append(args, "--mount", bindMount(launcher, sandboxCheckerPath, false))
 		workload = []string{sandboxCheckerPath, string(ModeIsolationProbe), "--qwen-version", invocation.Version.String(), filepath.Join(runDir, "host-canary")}
 	default:
 		return SandboxPlan{}, fmt.Errorf("unknown sandbox mode %q", invocation.Mode)
@@ -121,7 +122,7 @@ func bindMount(source, target string, writable bool) string {
 	return strings.TrimSuffix(output.String(), "\n")
 }
 
-func writeRunFiles(runDir string) error {
+func writeRunFiles(runDir string, mode Mode) error {
 	root := filepath.Join(runDir, "rootfs")
 	// This is a mount skeleton, not an OS image. Executables and libraries come
 	// from read-only host mounts; only the project and Qwen home persist writes.
@@ -142,8 +143,10 @@ func writeRunFiles(runDir string) error {
 			return fmt.Errorf("WriteFile(%s): %w", name, err)
 		}
 	}
-	if err := os.WriteFile(filepath.Join(runDir, "host-canary"), []byte("host-only\n"), 0o600); err != nil {
-		return fmt.Errorf("WriteFile(host-canary): %w", err)
+	if mode == ModeIsolationCheck {
+		if err := os.WriteFile(filepath.Join(runDir, "host-canary"), []byte("host-only\n"), 0o600); err != nil {
+			return fmt.Errorf("WriteFile(host-canary): %w", err)
+		}
 	}
 	return nil
 }
