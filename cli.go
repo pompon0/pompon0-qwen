@@ -16,10 +16,9 @@ type Mode string
 const (
 	ModeQwen           Mode = "qwen"
 	ModeIsolationCheck Mode = "isolation-check"
-	// Helpers run in different privilege contexts and are dispatched before normal
-	// CLI setup. They must never load project code, Qwen configuration, or hooks.
+	// The probe runs inside the sandbox and bypasses host configuration discovery.
+	// It must never load project code, Qwen configuration, or hooks.
 	ModeIsolationProbe Mode = "internal-isolation-probe"
-	ModeUserNSProbe    Mode = "internal-userns-probe"
 )
 
 type Args struct {
@@ -68,12 +67,6 @@ func newCommand(arguments []string, sandboxRunner func(context.Context, Args) er
 			}
 			return nil
 		},
-	})
-	root.AddCommand(&cobra.Command{
-		Use:    string(ModeUserNSProbe),
-		Hidden: true,
-		Args:   cobra.NoArgs,
-		RunE:   func(cmd *cobra.Command, args []string) error { return nil },
 	})
 	// Select the default command before Cobra searches for subcommands, so Qwen
 	// flag values that happen to name launcher commands cannot change dispatch.

@@ -47,7 +47,7 @@ func TestLauncherParsingPreservesForwardedArguments(t *testing.T) {
 }
 
 func TestRejectInvalidLauncherModes(t *testing.T) {
-	for _, args := range [][]string{{""}, {"shell"}, {"invalid"}, {"isolation-check", "extra"}, {string(ModeIsolationProbe)}, {string(ModeUserNSProbe), "extra"}} {
+	for _, args := range [][]string{{""}, {"shell"}, {"invalid"}, {"isolation-check", "extra"}, {string(ModeIsolationProbe)}} {
 		command := newCommand(args, func(context.Context, Args) error {
 			t.Fatal("invalid command reached sandbox runner")
 			return nil
@@ -103,18 +103,14 @@ func TestCommandPropagatesRunnerError(t *testing.T) {
 	}
 }
 
-func TestHelpersParseFlags(t *testing.T) {
-	for _, mode := range []Mode{ModeIsolationProbe, ModeUserNSProbe} {
-		t.Run(string(mode), func(t *testing.T) {
-			command := newCommand([]string{string(mode), "--unknown"}, runSandbox)
-			if err := command.ExecuteContext(t.Context()); err == nil || !strings.Contains(err.Error(), "unknown flag") {
-				t.Fatalf("unknown helper flag was not rejected: %v", err)
-			}
-			command = newCommand([]string{string(mode), "--help"}, runSandbox)
-			command.SetOut(io.Discard)
-			if err := command.ExecuteContext(t.Context()); err != nil {
-				t.Fatalf("helper help failed: %v", err)
-			}
-		})
+func TestIsolationProbeParsesFlags(t *testing.T) {
+	command := newCommand([]string{string(ModeIsolationProbe), "--unknown"}, runSandbox)
+	if err := command.ExecuteContext(t.Context()); err == nil || !strings.Contains(err.Error(), "unknown flag") {
+		t.Fatalf("unknown probe flag was not rejected: %v", err)
+	}
+	command = newCommand([]string{string(ModeIsolationProbe), "--help"}, runSandbox)
+	command.SetOut(io.Discard)
+	if err := command.ExecuteContext(t.Context()); err != nil {
+		t.Fatalf("probe help failed: %v", err)
 	}
 }

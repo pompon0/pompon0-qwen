@@ -107,20 +107,18 @@ func verifyCapabilities(status io.Reader) error {
 }
 
 func verifyNoUserNamespaces(ctx context.Context) error {
-	launcher, err := os.Executable()
-	if err != nil {
-		return err
-	}
 	// Probe in a child created in a new user namespace, rather than changing
 	// namespaces on a thread owned by Go's multithreaded runtime.
-	cmd := exec.CommandContext(ctx, launcher, string(ModeUserNSProbe))
+	// unshare(CLONE_NEWUSER) requires a single-threaded process, so testing it
+	// directly could fail because of Go's runtime instead of sandbox restrictions.
+	cmd := exec.CommandContext(ctx, "/usr/bin/true")
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		Cloneflags:                 unix.CLONE_NEWUSER,
 		UidMappings:                []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getuid(), Size: 1}},
 		GidMappings:                []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getgid(), Size: 1}},
 		GidMappingsEnableSetgroups: false,
 	}
-	err = cmd.Run()
+	err := cmd.Run()
 	if err == nil {
 		return errors.New("FAIL: workload can create further user namespaces")
 	}

@@ -89,36 +89,45 @@ func TestPodmanSetupFailureDoesNotLaunchWorkload(t *testing.T) {
 }
 
 func TestPodmanCancellationRemovesContainer(t *testing.T) {
-	tools, directory := fakePodman(t)
-	pidPath := filepath.Join(directory, "workload.pid")
-	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-	defer cancel()
-	err := scope.Run(ctx, func(ctx context.Context, s scope.Scope) error {
-		s.SpawnBg(func() error {
-			if err := utils.WaitFor(ctx, 10*time.Millisecond, func() bool { _, err := os.Stat(pidPath); return err == nil }); err != nil {
-				return err
+	for _, test := range []struct {
+		name, prefix string
+	}{
+		{name: "terminates on SIGTERM"},
+		{name: "requires SIGKILL", prefix: "trap '' TERM; "},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			tools, directory := fakePodman(t)
+			pidPath := filepath.Join(directory, "workload.pid")
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			defer cancel()
+			err := scope.Run(ctx, func(ctx context.Context, s scope.Scope) error {
+				s.SpawnBg(func() error {
+					if err := utils.WaitFor(ctx, 10*time.Millisecond, func() bool { _, err := os.Stat(pidPath); return err == nil }); err != nil {
+						return err
+					}
+					cancel()
+					return nil
+				})
+				return supervise(ctx, tools, testPlan("/bin/bash", "-c", test.prefix+"echo $$ > '"+pidPath+"'; exec sleep 30"), NetworkPolicy{})
+			})
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("unexpected cancellation: %v", err)
 			}
-			cancel()
-			return nil
+			if _, err := os.Stat(filepath.Join(directory, "removed")); err != nil {
+				t.Fatal("canceled container was not removed", err)
+			}
+			data, err := os.ReadFile(pidPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := syscall.Kill(pid, 0); !errors.Is(err, syscall.ESRCH) {
+				t.Fatalf("attached process was not reaped: %v", err)
+			}
 		})
-		return supervise(ctx, tools, testPlan("/bin/bash", "-c", "echo $$ > '"+pidPath+"'; exec sleep 30"), NetworkPolicy{})
-	})
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("unexpected cancellation: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(directory, "removed")); err != nil {
-		t.Fatal("canceled container was not removed", err)
-	}
-	data, err := os.ReadFile(pidPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := syscall.Kill(pid, 0); !errors.Is(err, syscall.ESRCH) {
-		t.Fatalf("attached process was not reaped: %v", err)
 	}
 }
 
