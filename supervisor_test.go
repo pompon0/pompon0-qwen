@@ -18,7 +18,7 @@ import (
 
 // Fake host tools exercise the real pipe/exec handshake without namespaces,
 // network privileges, Qwen, or access to any host project.
-func fakeTools(t *testing.T, nftFails bool) (Tools, string) {
+func fakeTools(t *testing.T) (Tools, string) {
 	t.Helper()
 	dir := t.TempDir()
 	write := func(name, body string) string {
@@ -32,20 +32,15 @@ func fakeTools(t *testing.T, nftFails bool) (Tools, string) {
 	var tools Tools
 	tools.Unshare = write("unshare", `while [[ $1 != -- ]]; do shift; done; shift; exec "$@"`)
 	tools.Bubblewrap = write("bwrap", `while [[ $1 != -- ]]; do shift; done; shift; exec "$@"`)
-	nftBody := "printf ready > '" + filepath.Join(dir, "firewall-ready") + "'\n"
-	if nftFails {
-		nftBody = "exit 7\n"
-	}
-	tools.NFT = write("nft", nftBody)
 	return tools, dir
 }
 
 func TestSupervisorSuccessfulHandshakeAndExitStatus(t *testing.T) {
-	tools, dir := fakeTools(t, false)
-	plan := SandboxPlan{Workload: []string{"/bin/bash", "-c", "test -f '" + filepath.Join(dir, "firewall-ready") + "'; exit 23"}}
+	tools, _ := fakeTools(t)
+	plan := SandboxPlan{Workload: []string{"/bin/bash", "-c", "exit 23"}}
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
-	err := supervise(ctx, tools, plan, dir)
+	err := supervise(ctx, tools, plan, NetworkPolicy{})
 	if exited, ok := errors.AsType[codeError](err); !ok || exited.exitCode() != 23 {
 		t.Fatalf("expected workload exit status 23, got %v", err)
 	}
@@ -85,35 +80,38 @@ func TestProcessWaitNormalizesExitStatus(t *testing.T) {
 	}
 }
 
-func TestSupervisorFirewallFailureDoesNotLaunchWorkload(t *testing.T) {
-	tools, dir := fakeTools(t, true)
+func TestSupervisorTAPFailureDoesNotLaunchWorkload(t *testing.T) {
+	tools, dir := fakeTools(t)
+	if err := os.WriteFile(tools.Unshare, []byte("#!/bin/bash\nset -eu\nexport POMPON_TEST_FAIL_TAP=1\nwhile [[ $1 != -- ]]; do shift; done; shift; exec \"$@\"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	marker := filepath.Join(dir, "workload-started")
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
-	err := supervise(ctx, tools, SandboxPlan{Workload: []string{"/usr/bin/touch", marker}}, dir)
+	err := supervise(ctx, tools, SandboxPlan{Workload: []string{"/usr/bin/touch", marker}}, NetworkPolicy{})
 	if err == nil {
-		t.Fatal("ignored firewall setup failure")
+		t.Fatal("ignored TAP setup failure")
 	}
 	if _, err := os.Stat(marker); !os.IsNotExist(err) {
-		t.Fatal("workload ran despite firewall failure")
+		t.Fatal("workload ran despite TAP failure")
 	}
 }
 
 func TestSupervisorNetworkFailureStopsWorkload(t *testing.T) {
-	tools, dir := fakeTools(t, false)
+	tools, _ := fakeTools(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 	if err := os.WriteFile(tools.Unshare, []byte("#!/bin/bash\nset -eu\nexport POMPON_TEST_FAIL_NETWORK=1\nwhile [[ $1 != -- ]]; do shift; done; shift; exec \"$@\"\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	err := supervise(ctx, tools, SandboxPlan{Workload: []string{"/bin/sleep", "30"}}, dir)
+	err := supervise(ctx, tools, SandboxPlan{Workload: []string{"/bin/sleep", "30"}}, NetworkPolicy{})
 	if err == nil || !strings.Contains(err.Error(), "embedded network") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
 func TestSupervisorCancellationReapsChild(t *testing.T) {
-	tools, dir := fakeTools(t, false)
+	tools, dir := fakeTools(t)
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 	pidPath := filepath.Join(dir, "workload.pid")
@@ -128,7 +126,7 @@ func TestSupervisorCancellationReapsChild(t *testing.T) {
 			cancel()
 			return nil
 		})
-		return supervise(ctx, tools, SandboxPlan{Workload: []string{"/bin/bash", "-c", "echo $$ > '" + pidPath + "'; exec sleep 30"}}, dir)
+		return supervise(ctx, tools, SandboxPlan{Workload: []string{"/bin/bash", "-c", "echo $$ > '" + pidPath + "'; exec sleep 30"}}, NetworkPolicy{})
 	})
 	cancel()
 	if !errors.Is(err, context.Canceled) {

@@ -22,7 +22,7 @@ func TestMain(m *testing.M) {
 		for _, child := range command.Commands() {
 			if child.Name() == string(ModeSetup) {
 				child.RunE = func(cmd *cobra.Command, args []string) error {
-					setup := namespaceSetup{NFTExecutable: args[0], PolicyFile: args[1], SandboxArguments: args[2:]}
+					setup := namespaceSetup{SandboxArguments: args}
 					return setup.run(fakeNamespaceTAP)
 				}
 			}
@@ -74,6 +74,9 @@ func TestSandboxStartupPermission(t *testing.T) {
 // Keep its peer inherited across setup's exec so it lives until the workload
 // exits. The supervisor still runs the actual gVisor networking library.
 func fakeNamespaceTAP() (*os.File, error) {
+	if os.Getenv("POMPON_TEST_FAIL_TAP") == "1" {
+		return nil, errors.New("simulated TAP creation failure")
+	}
 	if os.Getenv("POMPON_TEST_FAIL_NETWORK") == "1" {
 		return os.OpenFile(os.DevNull, os.O_RDWR, 0)
 	}

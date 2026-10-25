@@ -7,7 +7,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"syscall"
 	"time"
 
@@ -112,15 +111,15 @@ func awaitReady(ctx context.Context, ready *os.File, process *managedProcess, de
 	})
 }
 
-// The setup helper waits until nftables and the embedded network stack are
+// The setup helper waits until the TAP interface and filtered network stack are
 // ready before execing Bubblewrap. Qwen never runs during the privileged setup phase.
-func supervise(ctx context.Context, tools Tools, plan SandboxPlan, runDir string) error {
+func supervise(ctx context.Context, tools Tools, plan SandboxPlan, policy NetworkPolicy) error {
 	return scope.Run(ctx, func(ctx context.Context, s scope.Scope) error {
-		return superviseInScope(ctx, s, tools, plan, runDir)
+		return superviseInScope(ctx, s, tools, plan, policy)
 	})
 }
 
-func superviseInScope(ctx context.Context, s scope.Scope, tools Tools, plan SandboxPlan, runDir string) error {
+func superviseInScope(ctx context.Context, s scope.Scope, tools Tools, plan SandboxPlan, policy NetworkPolicy) error {
 	var opened []*os.File
 	defer func() {
 		for _, file := range opened {
@@ -158,7 +157,7 @@ func superviseInScope(ctx context.Context, s scope.Scope, tools Tools, plan Sand
 	}
 	args := []string{
 		"--user", "--map-root-user", "--net", "--",
-		launcher, string(ModeSetup), tools.NFT, filepath.Join(runDir, "policy.nft"), tools.Bubblewrap,
+		launcher, string(ModeSetup), tools.Bubblewrap,
 	}
 	args = append(args, plan.BubblewrapArguments...)
 	args = append(args, "--")
@@ -176,7 +175,7 @@ func superviseInScope(ctx context.Context, s scope.Scope, tools Tools, plan Sand
 	_ = readyW.Close()
 	_ = startR.Close()
 	_ = tapSender.Close()
-	if err := awaitReady(ctx, readyR, child, "namespace/firewall setup", startupTimeout); err != nil {
+	if err := awaitReady(ctx, readyR, child, "namespace/TAP setup", startupTimeout); err != nil {
 		return err
 	}
 	tap, err := receiveTAP(tapReceiver)
@@ -185,14 +184,15 @@ func superviseInScope(ctx context.Context, s scope.Scope, tools Tools, plan Sand
 	}
 	opened = append(opened, tap)
 	_ = tapReceiver.Close()
-	network, err := newUserNetwork()
+	network, err := newUserNetwork(policy)
 	if err != nil {
 		return err
 	}
-	defer network.Close()
+
 	networkCtx, cancelNetwork := context.WithCancel(ctx)
 	defer cancelNetwork()
 	s.SpawnBg(func() error {
+		defer network.Close()
 		err := runUserNetwork(networkCtx, network, tap)
 		if err != nil && child.exited() {
 			return nil

@@ -33,7 +33,7 @@ func newCommand(arguments []string, sandboxRunner func(context.Context, Args) er
 		Use:   "qwen-isolated",
 		Short: "Run Qwen Code in a rootless Linux sandbox",
 		Long: "Run Qwen Code in a rootless Linux sandbox from a Git repository.\n\n" +
-			"Qwen is the default command. Requires bubblewrap, nftables,\n" +
+			"Qwen is the default command. Requires bubblewrap,\n" +
 			"iproute2, and util-linux. Qwen must be installed in the active Node prefix.\n\n" +
 			"Configuration and packaging: https://github.com/pompon0/pompon0-qwen#readme",
 		Args:              cobra.NoArgs,
@@ -61,14 +61,12 @@ func newCommand(arguments []string, sandboxRunner func(context.Context, Args) er
 	})
 	// Helpers run before normal CLI setup and never load project code or settings.
 	setupCommand := &cobra.Command{
-		Use:    string(ModeSetup) + " NFT POLICY SANDBOX [arguments...]",
+		Use:    string(ModeSetup) + " SANDBOX [arguments...]",
 		Hidden: true,
-		Args:   cobra.MinimumNArgs(3),
+		Args:   cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			setup := namespaceSetup{
-				NFTExecutable:    args[0],
-				PolicyFile:       args[1],
-				SandboxArguments: args[2:],
+				SandboxArguments: args,
 			}
 			if err := setup.run(createNamespaceTAP); err != nil {
 				return fmt.Errorf("namespaceSetup.run(): %w", err)
@@ -76,7 +74,7 @@ func newCommand(arguments []string, sandboxRunner func(context.Context, Args) er
 			return nil
 		},
 	}
-	// After NFT, parsing stops so Bubblewrap owns its flags and -- separator.
+	// After SANDBOX, parsing stops so Bubblewrap owns its flags and -- separator.
 	setupCommand.Flags().SetInterspersed(false)
 	root.AddCommand(setupCommand)
 	root.AddCommand(&cobra.Command{

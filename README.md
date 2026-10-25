@@ -122,10 +122,11 @@ Relaunch after LAN/VPN route changes.
 | `user_network.go` | Namespace TAP setup, descriptor handoff, embedded network stack |
 | `network.go` | Typed IPv4 parsing, host network discovery, prefix normalization |
 | `qwen_config.go` | Qwen user settings and selected model endpoint resolution |
-| `policy.go` | Destination policy and nftables rendering |
+| `policy.go` | Destination policy and model-server TCP exception |
+| `netstack.go` | gVisor stack, destination filtering, and host connection forwarding |
 | `sandbox.go` | Invocation modes, mounts, workload, temporary configuration |
 | `supervisor.go` | Startup handshake, child processes, timeouts, cleanup |
-| `helpers.go` | Private Go helper modes, firewall setup, and workload startup gate |
+| `helpers.go` | Private Go helper modes, TAP handoff, and workload startup gate |
 | `check.go` | Native Go isolation diagnostics executed inside the sandbox |
 | `packaging/aur/` | AUR recipe, metadata, and publishing workflow |
 
@@ -144,13 +145,20 @@ separate so each can be changed without redesigning the rest of the launcher.
 
 ## Isolation boundary
 
-Trusted setup installs nftables inside a private user/network namespace before
-attaching the TAP interface to the supervisor’s embedded `gvisor-tap-vsock` Go
-network stack. No network subprocess or separate network binary is needed. Bubblewrap starts the workload in a child
-user namespace, with all capabilities dropped and further user namespaces disabled.
-Qwen shares the filtered network but cannot change its firewall. Setup failures
-abort startup; packet processing failures terminate the sandbox. No host firewall
-changes or host root privileges are required.
+Trusted setup creates a TAP interface inside a private user/network namespace.
+The supervisor owns the gVisor network stack, installs destination filters, and
+connects it to TAP before allowing Bubblewrap to start Qwen. Filtering uses
+public components from `gvisor-tap-vsock`; no fork, network subprocess, nft command,
+or kernel firewall rules are needed. gVisor parses packets and reassembles IPv4
+fragments; the selected model's TCP port is checked after reassembly.
+
+Bubblewrap starts the workload in a child user namespace, with all capabilities
+dropped and further user namespaces disabled. The workload cannot modify the
+supervisor's filters. Setup failures abort startup; packet processing failures
+terminate the sandbox. No host firewall changes or host root privileges are
+required. The TAP reader and gVisor protocol workers are stopped and joined on
+return. Some library forwarding tasks, host sockets, and the connection-tracking
+reaper can remain until supervisor exit; this limitation is documented in code.
 
 The project and sandbox home are writable. `/usr`, the Node installation, and
 selected system configuration are read-only. Temporary mounts are ephemeral.

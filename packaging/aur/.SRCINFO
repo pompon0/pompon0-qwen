@@ -12,7 +12,6 @@ pkgbase = qwen-isolated-git
 	depends = coreutils
 	depends = glibc
 	depends = iproute2
-	depends = nftables
 	depends = util-linux
 	optdepends = nodejs: Node.js runtime, as an alternative to a user-managed nvm installation
 	provides = qwen-isolated

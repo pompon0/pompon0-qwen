@@ -144,7 +144,7 @@ func readIPJSON(ctx context.Context, ip string, destination any, args ...string)
 }
 
 // collapsePrefixes removes overlap and merges adjacent sibling networks, keeping
-// nftables interval sets valid without relying on auto-merge support.
+// destination filters compact without duplicate rules.
 func collapsePrefixes(prefixes []netip.Prefix) []netip.Prefix {
 	ordered := slices.Clone(prefixes)
 	slices.SortFunc(ordered, func(a, b netip.Prefix) int {

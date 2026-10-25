@@ -78,7 +78,7 @@ func configuredModelServer(home string, environment map[string]string, invocatio
 	return server, nil
 }
 
-// Endpoint resolution intentionally stays separate from firewall rendering.
+// Endpoint resolution intentionally stays separate from filter installation.
 // Model provider metadata wins over CLI/env/legacy endpoint fallbacks, following
 // Qwen's documented resolution layers. Only one selected route grants access.
 func (settings qwenSettings) modelEndpoint(environment map[string]string, invocation Args) (string, error) {

@@ -106,7 +106,7 @@ func TestCommandPropagatesRunnerError(t *testing.T) {
 }
 
 func TestSetupPreservesSandboxArguments(t *testing.T) {
-	arguments := []string{"/nft", "/policy", "/bwrap", "--share-net", "--", "/qwen", "--help"}
+	arguments := []string{"/bwrap", "--share-net", "--", "/qwen", "--help"}
 	command := newCommand(slices.Concat([]string{string(ModeSetup)}, arguments), func(context.Context, Args) error {
 		t.Fatal("setup reached sandbox runner")
 		return nil

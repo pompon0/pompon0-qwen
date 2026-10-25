@@ -7,8 +7,6 @@ import (
 	"net"
 	"os"
 
-	"github.com/containers/gvisor-tap-vsock/pkg/types"
-	"github.com/containers/gvisor-tap-vsock/pkg/virtualnetwork"
 	"github.com/pompon0/pompon0-qwen/utils"
 	"github.com/pompon0/pompon0-qwen/utils/scope"
 	"github.com/vishvananda/netlink"
@@ -131,26 +129,7 @@ func (a tapAddress) String() string        { return string(a) }
 func (tapConnection) LocalAddr() net.Addr  { return tapAddress("gateway") }
 func (tapConnection) RemoteAddr() net.Addr { return tapAddress("namespace") }
 
-// newUserNetwork starts library-owned workers that outlive our scope. In v0.9.0,
-// VirtualNetwork.Close only closes configured port forwards: DNS/DHCP servers,
-// gVisor stack workers, pending host dials, and active TCP/UDP/ICMP forwarding
-// tasks and sockets may remain until the supervisor exits. We intentionally
-// accept that process-lifetime cleanup instead of maintaining a library fork.
-// Our TAP reader is still scoped, canceled, closed, and joined normally.
-func newUserNetwork() (*virtualnetwork.VirtualNetwork, error) {
-	// No host-loopback NAT, virtual host aliases, port forwards, or HTTP control
-	// server are exposed. nftables still controls every packet leaving Qwen.
-	network, err := virtualnetwork.New(&types.Configuration{
-		MTU: networkMTU, Subnet: networkSubnet, GatewayIP: networkGateway,
-		GatewayMacAddress: "5a:94:ef:e4:0c:ee", DHCPStaticLeases: map[string]string{},
-	})
-	if err != nil {
-		return nil, fmt.Errorf("virtualnetwork.New(): %w", err)
-	}
-	return network, nil
-}
-
-func runUserNetwork(ctx context.Context, network *virtualnetwork.VirtualNetwork, tap *os.File) error {
+func runUserNetwork(ctx context.Context, network *userNetwork, tap *os.File) error {
 	return scope.Run(ctx, func(ctx context.Context, s scope.Scope) error {
 		s.SpawnBg(func() error {
 			<-ctx.Done()

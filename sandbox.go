@@ -33,14 +33,14 @@ func runSandbox(ctx context.Context, invocation Args) error {
 		return err
 	}
 	defer os.RemoveAll(runDir)
-	if err := writeRunFiles(runDir, policy); err != nil {
+	if err := writeRunFiles(runDir); err != nil {
 		return err
 	}
 	plan, err := buildSandbox(config, invocation, runDir)
 	if err != nil {
 		return err
 	}
-	return supervise(ctx, config.Tools, plan, runDir)
+	return supervise(ctx, config.Tools, plan, policy)
 }
 
 func buildSandbox(config Config, invocation Args, runDir string) (SandboxPlan, error) {
@@ -86,10 +86,10 @@ func buildSandbox(config Config, invocation Args, runDir string) (SandboxPlan, e
 	return SandboxPlan{BubblewrapArguments: args, Workload: workload}, nil
 }
 
-func writeRunFiles(runDir string, policy NetworkPolicy) error {
+func writeRunFiles(runDir string) error {
 	files := map[string]string{
-		"policy.nft": policy.NFTables(), "resolv.conf": "nameserver 1.1.1.1\n",
-		"passwd": "qwen:x:0:0:Qwen:/home/qwen:/usr/bin/bash\n", "group": "qwen:x:0:\n", "host-canary": "host-only\n",
+		"resolv.conf": "nameserver 1.1.1.1\n",
+		"passwd":      "qwen:x:0:0:Qwen:/home/qwen:/usr/bin/bash\n", "group": "qwen:x:0:\n", "host-canary": "host-only\n",
 	}
 	for name, contents := range files {
 		if err := os.WriteFile(filepath.Join(runDir, name), []byte(contents), 0o600); err != nil {

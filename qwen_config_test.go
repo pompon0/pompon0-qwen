@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"maps"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -38,8 +39,8 @@ func TestConfiguredModelServer(t *testing.T) {
 	if err != nil || !present || endpoint.Address.String() != "192.168.1.50" || endpoint.Port != 11434 {
 		t.Fatalf("configured endpoint: %v, %v", server, err)
 	}
-	rules := newNetworkPolicy(HostNetwork{}, nil, server).NFTables()
-	if !strings.Contains(rules, "ip daddr 192.168.1.50 tcp dport 11434 counter accept") || strings.Contains(rules, "ip daddr 192.168.1.60 tcp dport 8000 counter accept") {
+	policy := newNetworkPolicy(HostNetwork{}, nil, server)
+	if !policy.allowsTCP(endpoint.Address, endpoint.Port) || policy.allowsTCP(netip.MustParseAddr("192.168.1.60"), 8000) {
 		t.Fatal("policy must allow only the selected endpoint")
 	}
 	if err := os.WriteFile(settingsPath, []byte(`{"model":`), 0o600); err != nil {

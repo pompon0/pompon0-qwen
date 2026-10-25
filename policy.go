@@ -1,14 +1,13 @@
 package main
 
 import (
-	"fmt"
 	"net/netip"
 	"strings"
 
 	"github.com/pompon0/pompon0-qwen/utils"
 )
 
-// NetworkPolicy describes allowed destinations independently of nft syntax.
+// NetworkPolicy describes the destinations permitted by the supervisor.
 type NetworkPolicy struct {
 	Blocked     []netip.Prefix
 	ModelServer utils.Option[ModelServer]
@@ -30,36 +29,18 @@ func newNetworkPolicy(host HostNetwork, extra []netip.Prefix, server utils.Optio
 	return NetworkPolicy{Blocked: collapsePrefixes(blocked), ModelServer: server}
 }
 
-func (policy NetworkPolicy) NFTables() string {
-	blocked := make([]string, len(policy.Blocked))
-	for i, prefix := range policy.Blocked {
-		blocked[i] = prefix.String()
+func (policy NetworkPolicy) blocks(address netip.Addr) bool {
+	for _, prefix := range policy.Blocked {
+		if prefix.Contains(address) {
+			return true
+		}
 	}
-	allowed := ""
-	if server, present := policy.ModelServer.Get(); present {
-		allowed = fmt.Sprintf("ip daddr %s tcp dport %d counter accept", server.Address, server.Port)
-	}
-	return fmt.Sprintf(`table inet qwen_egress {
-  set blocked4 {
-    type ipv4_addr
-    flags interval
-    elements = { %s }
-  }
-  chain output {
-    type filter hook output priority 0; policy drop;
-    oifname "lo" accept
-    %s
-    ip daddr @blocked4 counter reject with icmpx type admin-prohibited
-    meta nfproto ipv4 counter accept
-  }
-  chain input {
-    type filter hook input priority 0; policy drop;
-    iifname "lo" accept
-    ct state established,related accept
-  }
-  chain forward {
-    type filter hook forward priority 0; policy drop;
-  }
+	return false
 }
-`, strings.Join(blocked, ", "), allowed)
+
+func (policy NetworkPolicy) allowsTCP(address netip.Addr, port uint16) bool {
+	if model, present := policy.ModelServer.Get(); present && address == model.Address && port == model.Port {
+		return true
+	}
+	return address.Is4() && !policy.blocks(address)
 }

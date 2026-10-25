@@ -3,7 +3,6 @@ package main
 import (
 	"net/netip"
 	"slices"
-	"strings"
 	"testing"
 )
 
@@ -78,14 +77,8 @@ func TestPolicyCoversHostAndRoutes(t *testing.T) {
 	if policyBlocks(policy, netip.MustParseAddr("1.1.1.1")) {
 		t.Fatal("public internet blocked")
 	}
-	rules := policy.NFTables()
-	exception := strings.Index(rules, "ip daddr 192.168.1.50 tcp dport 11434 counter accept")
-	denial := strings.Index(rules, "ip daddr @blocked4")
-	if exception < 0 || exception >= denial {
-		t.Fatal("model exception must precede deny rules")
-	}
-	if strings.Contains(rules, "meta nfproto ipv6 counter accept") || !strings.Contains(rules, "policy drop;") {
-		t.Fatal("unexpected default network policy")
+	if !policy.allowsTCP(netip.MustParseAddr("192.168.1.50"), 11434) || policy.allowsTCP(netip.MustParseAddr("192.168.1.50"), 8000) {
+		t.Fatal("model exception must allow only its selected TCP port")
 	}
 }
 

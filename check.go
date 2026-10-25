@@ -46,9 +46,6 @@ func runIsolationChecks(ctx context.Context, canary string, output io.Writer) er
 	if err != nil {
 		return err
 	}
-	if err := verifyNoFirewallAuthority(ctx); err != nil {
-		return err
-	}
 	if err := verifyNoUserNamespaces(ctx); err != nil {
 		return err
 	}
@@ -68,7 +65,7 @@ func runIsolationChecks(ctx context.Context, canary string, output io.Writer) er
 		return err
 	}
 	fmt.Fprintln(output, "PASS: denied destination rejected; public IPv4 TCP works.")
-	fmt.Fprintln(output, "PASS: host canary hidden; /usr read-only; writable project/home; no capabilities or firewall authority.")
+	fmt.Fprintln(output, "PASS: host canary hidden; /usr read-only; writable project/home; no capabilities or further user namespaces.")
 	return nil
 }
 
@@ -103,15 +100,6 @@ func verifyCapabilities(status io.Reader) error {
 		if bits != 0 {
 			return fmt.Errorf("FAIL: %s is nonzero", kind)
 		}
-	}
-	return nil
-}
-
-func verifyNoFirewallAuthority(ctx context.Context) error {
-	if err := exec.CommandContext(ctx, "/usr/bin/nft", "list", "ruleset").Run(); err == nil {
-		return errors.New("FAIL: workload has firewall authority")
-	} else if _, exited := errors.AsType[*exec.ExitError](err); !exited {
-		return fmt.Errorf("test firewall authority: %w", err)
 	}
 	return nil
 }

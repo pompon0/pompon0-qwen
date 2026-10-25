@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 
 	"golang.org/x/sys/unix"
 )
@@ -24,8 +23,6 @@ const (
 // namespaceSetup holds only trusted supervisor inputs. SandboxArguments starts
 // with the Bubblewrap executable and is passed directly to exec, never a shell.
 type namespaceSetup struct {
-	NFTExecutable    string
-	PolicyFile       string
 	SandboxArguments []string
 }
 
@@ -63,11 +60,6 @@ func (setup namespaceSetup) run(createTAP func() (*os.File, error)) error {
 	}
 	defer networkSocket.Close()
 	// This stage runs trusted code only, before any Qwen/project code.
-	cmd := exec.Command(setup.NFTExecutable, "-f", setup.PolicyFile)
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("load namespace firewall: %w", err)
-	}
 	tap, err := createTAP()
 	if err != nil {
 		return fmt.Errorf("createNamespaceTAP(): %w", err)
@@ -89,7 +81,7 @@ func (setup namespaceSetup) run(createTAP func() (*os.File, error)) error {
 
 func awaitSandboxPermission(ready, start *os.File) error {
 	if _, err := io.WriteString(ready, "1"); err != nil {
-		return fmt.Errorf("signal firewall readiness: %w", err)
+		return fmt.Errorf("signal namespace readiness: %w", err)
 	}
 	if err := ready.Close(); err != nil {
 		return err
