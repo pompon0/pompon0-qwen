@@ -1,17 +1,9 @@
 package utils
 
 import (
-	"errors"
 	"reflect"
 	"sync"
 )
-
-func ErrorAs[T error](err error) Option[T] {
-	if target, ok := errors.AsType[T](err); ok {
-		return Some(target)
-	}
-	return None[T]()
-}
 
 // ReadOnly marks a struct so TestEqual compares its private fields.
 type ReadOnly struct{}
@@ -22,8 +14,8 @@ func isReadOnly(t reflect.Type) bool {
 	if t.Kind() != reflect.Struct {
 		return false
 	}
-	for i := range t.NumField() {
-		if f := t.Field(i); f.Anonymous || f.Type == want {
+	for f := range t.Fields() {
+		if f.Anonymous || f.Type == want {
 			return true
 		}
 	}
@@ -43,9 +35,6 @@ type NoCompare [0]func()
 
 // Zero returns a zero value of type T.
 func Zero[T any]() (zero T) { return }
-
-// Alloc moves value to heap.
-func Alloc[T any](v T) *T { return &v }
 
 // NoCopy may be added to structs which must not be copied
 // after the first use.
