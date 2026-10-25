@@ -3,7 +3,7 @@ package scope
 import (
 	"context"
 
-	"github.com/gprusak/gprusak-qwen/utils"
+	"github.com/pompon0/pompon0-qwen/utils"
 )
 
 // GlobalHandle is a handle to a task spawned via SpawnGlobal.

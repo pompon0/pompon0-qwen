@@ -11,6 +11,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/pompon0/pompon0-qwen/utils"
 )
 
 type ModelServer struct {
@@ -20,21 +22,22 @@ type ModelServer struct {
 
 // modelServerFromURL never resolves hostnames on the host. Public DNS names
 // continue to use normal filtered egress; LAN exceptions require a literal IPv4.
-func modelServerFromURL(value string) (*ModelServer, error) {
+// None means the endpoint needs no explicit model-server exception.
+func modelServerFromURL(value string) (utils.Option[ModelServer], error) {
 	if value == "" {
-		return nil, nil
+		return utils.None[ModelServer](), nil
 	}
 	endpoint, err := url.Parse(value)
 	if err != nil || endpoint.Hostname() == "" || (endpoint.Scheme != "http" && endpoint.Scheme != "https") {
-		return nil, fmt.Errorf("model baseUrl must be an absolute HTTP or HTTPS URL")
+		return utils.None[ModelServer](), fmt.Errorf("model baseUrl must be an absolute HTTP or HTTPS URL")
 	}
 	if strings.Contains(endpoint.Host, "$") {
-		return nil, fmt.Errorf("unresolved variable in model baseUrl; use a literal endpoint or define it in settings.env")
+		return utils.None[ModelServer](), fmt.Errorf("unresolved variable in model baseUrl; use a literal endpoint or define it in settings.env")
 	}
 	portText := endpoint.Port()
 	if portText == "" {
 		if strings.HasSuffix(endpoint.Host, ":") {
-			return nil, fmt.Errorf("model baseUrl has an empty TCP port")
+			return utils.None[ModelServer](), fmt.Errorf("model baseUrl has an empty TCP port")
 		}
 		portText = "80"
 		if endpoint.Scheme == "https" {
@@ -43,25 +46,25 @@ func modelServerFromURL(value string) (*ModelServer, error) {
 	}
 	port, err := strconv.ParseUint(portText, 10, 16)
 	if err != nil || port == 0 {
-		return nil, fmt.Errorf("model baseUrl has an invalid TCP port")
+		return utils.None[ModelServer](), fmt.Errorf("model baseUrl has an invalid TCP port")
 	}
 	ip, err := netip.ParseAddr(endpoint.Hostname())
 	if err != nil {
 		if strings.EqualFold(endpoint.Hostname(), "localhost") || strings.HasSuffix(strings.ToLower(endpoint.Hostname()), ".localhost") {
-			return nil, fmt.Errorf("model baseUrl must use a LAN/public IPv4 address instead of localhost")
+			return utils.None[ModelServer](), fmt.Errorf("model baseUrl must use a LAN/public IPv4 address instead of localhost")
 		}
-		return nil, nil
+		return utils.None[ModelServer](), nil
 	}
 	if !ip.Is4() {
-		return nil, fmt.Errorf("IPv6 model endpoints are not supported; use a LAN/public IPv4 address")
+		return utils.None[ModelServer](), fmt.Errorf("IPv6 model endpoints are not supported; use a LAN/public IPv4 address")
 	}
 	if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsMulticast() || ip.IsUnspecified() || netip.MustParsePrefix("240.0.0.0/4").Contains(ip) {
-		return nil, fmt.Errorf("model baseUrl must use a LAN/public IPv4 address")
+		return utils.None[ModelServer](), fmt.Errorf("model baseUrl must use a LAN/public IPv4 address")
 	}
 	if netip.MustParsePrefix("10.0.2.0/24").Contains(ip) {
-		return nil, fmt.Errorf("model baseUrl overlaps the slirp virtual subnet 10.0.2.0/24")
+		return utils.None[ModelServer](), fmt.Errorf("model baseUrl overlaps the slirp virtual subnet 10.0.2.0/24")
 	}
-	return &ModelServer{Address: ip, Port: uint16(port)}, nil
+	return utils.Some(ModelServer{Address: ip, Port: uint16(port)}), nil
 }
 
 func parseIPv4Prefix(value string) (netip.Prefix, error) {

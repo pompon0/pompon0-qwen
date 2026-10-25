@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/gprusak/gprusak-qwen/utils/require"
+	"github.com/pompon0/pompon0-qwen/utils/require"
 )
 
 func testJSON[T any](t *testing.T, want T) {

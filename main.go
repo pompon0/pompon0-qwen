@@ -10,7 +10,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"golang.org/x/sync/errgroup"
+	"github.com/pompon0/pompon0-qwen/utils/scope"
 )
 
 func main() {
@@ -29,26 +29,23 @@ func run() int {
 		fmt.Print(helpText)
 		return 0
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(signals)
-	var tasks errgroup.Group
 	var signalCode int
-	tasks.Go(func() error {
-		select {
-		case sig := <-signals:
-			signalCode = 128 + int(sig.(syscall.Signal))
-			cancel()
-		case <-ctx.Done():
-		}
-		return nil
+	code, err := scope.Run1(context.Background(), func(ctx context.Context, tasks scope.Scope) (int, error) {
+		tasks.SpawnBg(func() error {
+			select {
+			case sig := <-signals:
+				signalCode = 128 + int(sig.(syscall.Signal))
+				tasks.Cancel(context.Canceled)
+			case <-ctx.Done():
+			}
+			return nil
+		})
+		return launch(ctx, os.Args[1:])
 	})
-	code, err := launch(ctx, os.Args[1:])
-	// Join the signal watcher even when launch returns without a signal.
-	cancel()
-	_ = tasks.Wait()
+	// The scope joins the signal watcher even when launch returns without a signal.
 	if signalCode != 0 {
 		return signalCode
 	}
@@ -69,6 +66,13 @@ func launch(ctx context.Context, arguments []string) (int, error) {
 	config, err := discoverConfig()
 	if err != nil {
 		return 0, err
+	}
+	// A shell must remain available to repair missing or invalid Qwen settings.
+	if invocation.Mode != ModeShell {
+		config.ModelServer, err = configuredModelServer(config.Home, config.Environment, invocation)
+		if err != nil {
+			return 0, err
+		}
 	}
 	network, err := discoverNetwork(ctx, config.Tools.IP)
 	if err != nil {

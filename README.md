@@ -2,7 +2,7 @@
 
 A rootless Linux launcher for Qwen Code.
 The launcher, trusted setup helper, and isolation checks are implemented in Go.
-The executable uses `golang.org/x/sync/errgroup` for structured concurrency and
+The executable uses `utils/scope.Scope` for structured concurrency and
 `golang.org/x/sys/unix` for Linux system calls.
 
 ## Arch Linux package

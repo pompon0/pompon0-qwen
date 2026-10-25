@@ -1,7 +1,7 @@
 # AUR packaging
 
 `PKGBUILD` builds `qwen-isolated-git` from the default branch of
-`https://github.com/gprusak/gprusak-qwen`. Change `url` if the public repository
+`https://github.com/pompon0/pompon0-qwen`. Change `url` if the public repository
 uses a different name. This VCS package needs no release tags: `pkgver()` uses
 the upstream commit count and abbreviated commit ID.
 

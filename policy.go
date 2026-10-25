@@ -4,15 +4,17 @@ import (
 	"fmt"
 	"net/netip"
 	"strings"
+
+	"github.com/pompon0/pompon0-qwen/utils"
 )
 
 // NetworkPolicy describes allowed destinations independently of nft syntax.
 type NetworkPolicy struct {
 	Blocked     []netip.Prefix
-	ModelServer *ModelServer
+	ModelServer utils.Option[ModelServer]
 }
 
-func newNetworkPolicy(host HostNetwork, extra []netip.Prefix, server *ModelServer) NetworkPolicy {
+func newNetworkPolicy(host HostNetwork, extra []netip.Prefix, server utils.Option[ModelServer]) NetworkPolicy {
 	var blocked []netip.Prefix
 	for value := range strings.FieldsSeq(`0.0.0.0/8 10.0.0.0/8 100.64.0.0/10 127.0.0.0/8
 		169.254.0.0/16 172.16.0.0/12 192.0.0.0/24 192.0.2.0/24
@@ -34,7 +36,7 @@ func (policy NetworkPolicy) NFTables() string {
 		blocked[i] = prefix.String()
 	}
 	allowed := ""
-	if server := policy.ModelServer; server != nil {
+	if server, present := policy.ModelServer.Get(); present {
 		allowed = fmt.Sprintf("ip daddr %s tcp dport %d counter accept", server.Address, server.Port)
 	}
 	return fmt.Sprintf(`table inet qwen_egress {

@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gprusak/gprusak-qwen/utils"
+	"github.com/pompon0/pompon0-qwen/utils"
 )
 
 type scope struct {

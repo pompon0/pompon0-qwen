@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/gprusak/gprusak-qwen/utils"
-	"github.com/gprusak/gprusak-qwen/utils/require"
-	"github.com/gprusak/gprusak-qwen/utils/scope"
+	"github.com/pompon0/pompon0-qwen/utils"
+	"github.com/pompon0/pompon0-qwen/utils/require"
+	"github.com/pompon0/pompon0-qwen/utils/scope"
 )
 
 func TestAtomicSend(t *testing.T) {

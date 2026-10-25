@@ -1,11 +1,13 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"io"
 	"os"
 	"testing"
 
-	"golang.org/x/sync/errgroup"
+	"github.com/pompon0/pompon0-qwen/utils/scope"
 )
 
 // Supervisor tests re-exec this test binary through the same private helper
@@ -32,15 +34,16 @@ func TestSandboxStartupPermission(t *testing.T) {
 			}
 			defer startR.Close()
 			defer startW.Close()
-			var tasks errgroup.Group
-			tasks.Go(func() error { return awaitSandboxPermission(readyW, startR) })
 			var ready [1]byte
-			_, readErr := io.ReadFull(readyR, ready[:])
-			_, writeErr := io.WriteString(startW, message)
-			_ = startW.Close()
-			err = tasks.Wait()
-			if readErr != nil || writeErr != nil || ready[0] != '1' {
-				t.Fatalf("readiness protocol: %v, %v, %q", readErr, writeErr, ready)
+			err = scope.Run(t.Context(), func(_ context.Context, tasks scope.Scope) error {
+				tasks.Spawn(func() error { return awaitSandboxPermission(readyW, startR) })
+				_, readErr := io.ReadFull(readyR, ready[:])
+				_, writeErr := io.WriteString(startW, message)
+				_ = startW.Close()
+				return errors.Join(readErr, writeErr)
+			})
+			if ready[0] != '1' {
+				t.Fatalf("readiness protocol: %q", ready)
 			}
 			if (err == nil) != (message == "go\n") {
 				t.Fatalf("permission %q: %v", message, err)

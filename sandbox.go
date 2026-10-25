@@ -79,8 +79,8 @@ func buildSandbox(config Config, invocation Invocation, runDir string) (SandboxP
 	case ModeShell:
 		workload = append([]string{"/usr/bin/bash", "--noprofile", "--norc"}, invocation.Arguments...)
 	case ModeCheck:
-		// The launcher is otherwise unavailable inside the sandbox. Check
-		// mode alone mounts it read-only so its Go diagnostics can run there.
+		// Check mode explicitly mounts the launcher read-only at a stable
+		// path so Go diagnostics work regardless of its installation location.
 		if config.Launcher == "" {
 			return SandboxPlan{}, fmt.Errorf("check mode requires the launcher executable")
 		}

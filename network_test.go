@@ -10,7 +10,8 @@ import (
 func TestModelServerValidation(t *testing.T) {
 	for _, value := range []string{"http://192.168.1.50:11434/v1", "https://8.8.8.8:65535/v1", "http://10.1.1.1:1"} {
 		server, err := modelServerFromURL(value)
-		if err != nil || server == nil || server.Port == 0 {
+		endpoint, present := server.Get()
+		if err != nil || !present || endpoint.Port == 0 {
 			t.Errorf("rejected %q: %v", value, err)
 		}
 	}
@@ -19,16 +20,17 @@ func TestModelServerValidation(t *testing.T) {
 			t.Errorf("accepted %q", value)
 		}
 	}
-	if server, err := modelServerFromURL(""); server != nil || err != nil {
+	if server, err := modelServerFromURL(""); server.IsPresent() || err != nil {
 		t.Fatal("empty exception must be disabled")
 	}
 	for endpoint, port := range map[string]uint16{"http://192.168.1.50/v1": 80, "https://192.168.1.50/v1": 443} {
 		server, err := modelServerFromURL(endpoint)
-		if err != nil || server == nil || server.Port != port {
+		value, present := server.Get()
+		if err != nil || !present || value.Port != port {
 			t.Errorf("default port for %q: %v, %v", endpoint, server, err)
 		}
 	}
-	if server, err := modelServerFromURL("https://api.example.com/v1"); server != nil || err != nil {
+	if server, err := modelServerFromURL("https://api.example.com/v1"); server.IsPresent() || err != nil {
 		t.Fatal("public DNS endpoints should use ordinary filtered networking")
 	}
 }
@@ -61,7 +63,7 @@ func TestCollapsePrefixes(t *testing.T) {
 
 func TestPolicyCoversHostAndRoutes(t *testing.T) {
 	server, err := modelServerFromURL("http://192.168.1.50:11434/v1")
-	if err != nil {
+	if err != nil || !server.IsPresent() {
 		t.Fatal(err)
 	}
 	policy := newNetworkPolicy(HostNetwork{

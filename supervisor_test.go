@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"golang.org/x/sync/errgroup"
+	"github.com/pompon0/pompon0-qwen/utils/scope"
 )
 
 // Fake host tools exercise the real pipe/exec handshake without namespaces,
@@ -86,27 +86,26 @@ func TestSupervisorCancellationReapsBothChildren(t *testing.T) {
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 	pidPath := filepath.Join(dir, "workload.pid")
-	var tasks errgroup.Group
-	tasks.Go(func() error {
-		ticker := time.NewTicker(10 * time.Millisecond)
-		defer ticker.Stop()
-		for {
-			if data, err := os.ReadFile(pidPath); err == nil && len(data) > 0 {
-				cancel()
-				return nil
+	err := scope.Run(ctx, func(ctx context.Context, tasks scope.Scope) error {
+		tasks.SpawnBg(func() error {
+			ticker := time.NewTicker(10 * time.Millisecond)
+			defer ticker.Stop()
+			for {
+				if data, err := os.ReadFile(pidPath); err == nil && len(data) > 0 {
+					cancel()
+					return nil
+				}
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-ticker.C:
+				}
 			}
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-ticker.C:
-			}
-		}
+		})
+		_, err := supervise(ctx, tools, SandboxPlan{Workload: []string{"/bin/bash", "-c", "echo $$ > '" + pidPath + "'; exec sleep 30"}}, dir)
+		return err
 	})
-	_, err := supervise(ctx, tools, SandboxPlan{Workload: []string{"/bin/bash", "-c", "echo $$ > '" + pidPath + "'; exec sleep 30"}}, dir)
 	cancel()
-	if waitErr := tasks.Wait(); waitErr != nil {
-		t.Fatalf("workload did not start: %v", waitErr)
-	}
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected cancellation, got %v", err)
 	}
@@ -131,22 +130,20 @@ func TestAwaitReadyTimeoutAndCancellation(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		var tasks errgroup.Group
-		process, err := startProcess(&tasks, exec.Command("/bin/sleep", "30"))
-		if err != nil {
-			t.Fatal(err)
-		}
 		ctx, cancel := context.WithCancel(t.Context())
 		if canceled {
 			cancel()
 		}
-		err = awaitReady(ctx, r, process, "test helper", 20*time.Millisecond)
+		err = scope.Run(t.Context(), func(_ context.Context, tasks scope.Scope) error {
+			process, err := startProcess(tasks, exec.Command("/bin/sleep", "30"))
+			if err != nil {
+				return err
+			}
+			defer process.stop()
+			return awaitReady(ctx, r, process, "test helper", 20*time.Millisecond)
+		})
 		cancel()
 		_ = w.Close()
-		process.stop()
-		if err := tasks.Wait(); err != nil {
-			t.Fatal(err)
-		}
 		if err == nil {
 			t.Fatal("helper became ready without a readiness byte")
 		}

@@ -13,7 +13,7 @@ import (
 	"syscall"
 	"time"
 
-	"golang.org/x/sync/errgroup"
+	"github.com/pompon0/pompon0-qwen/utils/scope"
 )
 
 const startupTimeout = 15 * time.Second
@@ -21,7 +21,7 @@ const shutdownTimeout = 3 * time.Second
 
 var helperEnvironment = []string{"PATH=/usr/bin:/bin", "LANG=C.UTF-8"}
 
-// The supervisor's errgroup owns each process waiter. Closing done publishes
+// The supervisor's scope owns each process waiter. Closing done publishes
 // err to observers; the supervisor stops all children and joins every waiter
 // before returning, including on startup failure and cancellation.
 type managedProcess struct {
@@ -30,12 +30,12 @@ type managedProcess struct {
 	err  error
 }
 
-func startProcess(tasks *errgroup.Group, cmd *exec.Cmd) (*managedProcess, error) {
+func startProcess(tasks scope.Scope, cmd *exec.Cmd) (*managedProcess, error) {
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
 	p := &managedProcess{cmd: cmd, done: make(chan struct{})}
-	tasks.Go(func() error {
+	tasks.SpawnBg(func() error {
 		p.err = cmd.Wait()
 		close(p.done)
 		// Workload exit codes are results, not group errors. Supervision
@@ -55,7 +55,7 @@ func (p *managedProcess) exited() bool {
 }
 
 func (p *managedProcess) stop() {
-	if p == nil || p.exited() {
+	if p.exited() {
 		return
 	}
 	_ = p.cmd.Process.Signal(syscall.SIGTERM)
@@ -70,43 +70,47 @@ func (p *managedProcess) stop() {
 }
 
 func awaitReady(ctx context.Context, ready *os.File, process *managedProcess, description string, timeout time.Duration) error {
-	var readers errgroup.Group
-	finished := make(chan struct{})
-	readers.Go(func() error {
-		defer close(finished)
-		var value [1]byte
-		_, err := io.ReadFull(ready, value[:])
-		if err == nil && value[0] != '1' {
-			err = fmt.Errorf("invalid readiness byte %q", value[0])
+	return scope.Run(ctx, func(ctx context.Context, readers scope.Scope) error {
+		result := make(chan error, 1)
+		readers.SpawnBg(func() error {
+			var value [1]byte
+			_, err := io.ReadFull(ready, value[:])
+			if err == nil && value[0] != '1' {
+				err = fmt.Errorf("invalid readiness byte %q", value[0])
+			}
+			result <- err
+			return nil
+		})
+		// Closing first unblocks ReadFull on every early return. The scope
+		// joins the reader before its owning function releases resources.
+		defer ready.Close()
+		timer := time.NewTimer(timeout)
+		defer timer.Stop()
+		select {
+		case err := <-result:
+			if err != nil {
+				return fmt.Errorf("%s exited before becoming ready: %w", description, err)
+			}
+			return nil
+		case <-process.done:
+			return fmt.Errorf("%s exited before becoming ready (status %d)", description, processExitCode(process.err))
+		case <-timer.C:
+			return fmt.Errorf("%s startup timed out", description)
+		case <-ctx.Done():
+			return ctx.Err()
 		}
-		return err
 	})
-	defer func() {
-		// Closing first unblocks ReadFull on every early return. Join the
-		// reader before its owning function releases any resources.
-		_ = ready.Close()
-		_ = readers.Wait()
-	}()
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
-	select {
-	case <-finished:
-		if err := readers.Wait(); err != nil {
-			return fmt.Errorf("%s exited before becoming ready: %w", description, err)
-		}
-		return nil
-	case <-process.done:
-		return fmt.Errorf("%s exited before becoming ready (status %d)", description, processExitCode(process.err))
-	case <-timer.C:
-		return fmt.Errorf("%s startup timed out", description)
-	case <-ctx.Done():
-		return ctx.Err()
-	}
 }
 
 // The setup helper waits until both nftables and slirp are ready before execing
 // Bubblewrap. Qwen never runs during the privileged setup phase.
-func supervise(ctx context.Context, tools Tools, plan SandboxPlan, runDir string) (code int, err error) {
+func supervise(ctx context.Context, tools Tools, plan SandboxPlan, runDir string) (int, error) {
+	return scope.Run1(ctx, func(ctx context.Context, tasks scope.Scope) (int, error) {
+		return superviseInScope(ctx, tasks, tools, plan, runDir)
+	})
+}
+
+func superviseInScope(ctx context.Context, tasks scope.Scope, tools Tools, plan SandboxPlan, runDir string) (code int, err error) {
 	var opened []*os.File
 	defer func() {
 		for _, file := range opened {
@@ -142,14 +146,13 @@ func supervise(ctx context.Context, tools Tools, plan SandboxPlan, runDir string
 		return 0, err
 	}
 	defer log.Close()
-	var tasks errgroup.Group
-	var child, slirp *managedProcess
+	var processes []*managedProcess
 	defer func() {
 		// slirp's exit pipe also closes automatically if the supervisor dies.
 		_ = exitW.Close()
-		child.stop()
-		slirp.stop()
-		_ = tasks.Wait()
+		for _, process := range processes {
+			process.stop()
+		}
 		if err != nil {
 			if contents, readErr := os.ReadFile(logPath); readErr == nil && strings.TrimSpace(string(contents)) != "" {
 				fmt.Fprintln(os.Stderr, strings.TrimSpace(string(contents)))
@@ -175,10 +178,11 @@ func supervise(ctx context.Context, tools Tools, plan SandboxPlan, runDir string
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	// ExtraFiles maps consecutively to child descriptors 3 and 4.
 	cmd.ExtraFiles = []*os.File{readyW, startR}
-	child, err = startProcess(&tasks, cmd)
+	child, err := startProcess(tasks, cmd)
 	if err != nil {
 		return 0, fmt.Errorf("start namespace setup: %w", err)
 	}
+	processes = append(processes, child)
 	_ = readyW.Close()
 	_ = startR.Close()
 	if err := awaitReady(ctx, readyR, child, "namespace/firewall setup", startupTimeout); err != nil {
@@ -190,10 +194,11 @@ func supervise(ctx context.Context, tools Tools, plan SandboxPlan, runDir string
 	cmd.Env = helperEnvironment
 	cmd.Stdout, cmd.Stderr = log, log
 	cmd.ExtraFiles = []*os.File{slirpW, exitR}
-	slirp, err = startProcess(&tasks, cmd)
+	slirp, err := startProcess(tasks, cmd)
 	if err != nil {
 		return 0, fmt.Errorf("start slirp4netns: %w", err)
 	}
+	processes = append(processes, slirp)
 	_ = slirpW.Close()
 	_ = exitR.Close()
 	if err := awaitReady(ctx, slirpR, slirp, "slirp4netns", startupTimeout); err != nil {

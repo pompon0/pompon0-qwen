@@ -8,6 +8,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/pompon0/pompon0-qwen/utils"
 )
 
 // Tools are resolved on the host before entering any namespace.
@@ -19,7 +21,7 @@ type Config struct {
 	Project, WorkingDirectory, NodePrefix, State, Home string
 	Launcher                                           string
 	Tools                                              Tools
-	ModelServer                                        *ModelServer
+	ModelServer                                        utils.Option[ModelServer]
 	ExtraDenied                                        []netip.Prefix
 	Environment                                        map[string]string
 }

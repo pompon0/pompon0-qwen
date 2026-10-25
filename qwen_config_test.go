@@ -27,14 +27,15 @@ func TestConfiguredModelServer(t *testing.T) {
 		t.Fatal(err)
 	}
 	settingsPath := filepath.Join(home, ".qwen/settings.json")
-	if server, err := configuredModelServer(home, nil, Invocation{}); server != nil || err != nil {
+	if server, err := configuredModelServer(home, nil, Invocation{}); server.IsPresent() || err != nil {
 		t.Fatalf("missing settings: %v, %v", server, err)
 	}
 	if err := os.WriteFile(settingsPath, []byte(localModelSettings), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	server, err := configuredModelServer(home, nil, Invocation{})
-	if err != nil || server == nil || server.Address.String() != "192.168.1.50" || server.Port != 11434 {
+	endpoint, present := server.Get()
+	if err != nil || !present || endpoint.Address.String() != "192.168.1.50" || endpoint.Port != 11434 {
 		t.Fatalf("configured endpoint: %v, %v", server, err)
 	}
 	rules := newNetworkPolicy(HostNetwork{}, nil, server).NFTables()
