@@ -13,10 +13,12 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/pompon0/pompon0-qwen/utils/scope"
 	"golang.org/x/sys/unix"
 )
 
@@ -88,12 +90,24 @@ func TestPodmanIntegration(t *testing.T) {
 				"POMPON_PODMAN_PROBE": "1",
 				"POMPON_TEST_PROJECT": config.Project,
 				"POMPON_TEST_CWD":     config.WorkingDirectory,
-				"POMPON_TEST_MODEL":   net.JoinHostPort("model.test", fmt.Sprint(modelAddress.Port())),
+				"POMPON_TEST_MODEL":   modelAddress.String(),
 				"POMPON_TEST_DENIED":  deniedAddress.String(),
 				"POMPON_TEST_CANARY":  filepath.Join(root, "host-canary"),
 			}
-			endpoint := ModelEndpoint{Hostname: "model.test", Addresses: []netip.AddrPort{modelAddress}}
-			if err := writeRunFiles(root, config.Home, ModeIsolationCheck, endpoint); err != nil {
+			invocation, err := parseArgs([]string{"--localnet=" + modelAddress.String(), "isolation-check"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			config.Localnet = invocation.Config.Localnet
+			localnet, err := config.Localnet.Resolve(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			// DNS lookup is covered by TestLocalnetDNSResolution; exercise the
+			// resulting pinned hostname through the container's real resolver.
+			localnet.Hosts["localnet.test"] = []netip.Addr{test.target}
+			probeEnvironment["POMPON_TEST_MODEL"] = net.JoinHostPort("localnet.test", strconv.Itoa(int(modelAddress.Port())))
+			if err := writeRunFiles(root, config.Home, ModeIsolationCheck, localnet); err != nil {
 				t.Fatal(err)
 			}
 			plan, err := buildSandbox(config, Args{Mode: ModeIsolationCheck}, root)
@@ -113,10 +127,35 @@ func TestPodmanIntegration(t *testing.T) {
 					}
 				}
 			}
-			policy := newNetworkPolicy(HostNetwork{Addresses: []netip.Addr{test.target}}, endpoint.Addresses)
+			policy := newNetworkPolicy(HostNetwork{Addresses: []netip.Addr{test.target}}, localnet.Addresses)
 			ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 			defer cancel()
-			if err := supervise(ctx, config.Tools, plan, policy); err != nil {
+			if err := scope.Run(ctx, func(ctx context.Context, s scope.Scope) error {
+				// Listen on the same allowed and denied ports for both protocols.
+				for _, address := range []netip.AddrPort{modelAddress, deniedAddress} {
+					connection, err := net.ListenPacket(strings.Replace(test.network, "tcp", "udp", 1), net.JoinHostPort(test.bind.String(), strconv.Itoa(int(address.Port()))))
+					if err != nil {
+						return fmt.Errorf("listen on UDP test port: %w", err)
+					}
+					defer connection.Close()
+					s.SpawnBg(func() error {
+						buffer := make([]byte, 4096)
+						for {
+							n, peer, err := connection.ReadFrom(buffer)
+							if errors.Is(err, net.ErrClosed) {
+								return nil
+							}
+							if err != nil {
+								return fmt.Errorf("read UDP test packet: %w", err)
+							}
+							if _, err := connection.WriteTo(buffer[:n], peer); err != nil {
+								return fmt.Errorf("echo UDP test packet: %w", err)
+							}
+						}
+					})
+				}
+				return supervise(ctx, config.Tools, plan, policy)
+			}); err != nil {
 				t.Fatal(err)
 			}
 			if data, err := os.ReadFile(filepath.Join(config.stateDir(), "oauth_creds.json")); err != nil || string(data) != "refreshed" {
@@ -242,9 +281,41 @@ func TestPodmanProbe(t *testing.T) {
 	if err != nil || strings.TrimSpace(string(contents)) != "model endpoint" {
 		t.Fatalf("invalid model response: %q, %v", contents, err)
 	}
+	if err := exchangeUDP(t.Context(), os.Getenv("POMPON_TEST_MODEL")); err != nil {
+		t.Fatal("allowed UDP endpoint was blocked", err)
+	}
 	denied := netip.MustParseAddrPort(os.Getenv("POMPON_TEST_DENIED"))
 	err = probeTCP(t.Context(), denied)
 	if !errors.Is(err, unix.EACCES) && !errors.Is(err, unix.EPERM) && !errors.Is(err, unix.EHOSTUNREACH) && !errors.Is(err, unix.ENETUNREACH) {
 		t.Fatalf("other host port was not explicitly rejected: %v", err)
 	}
+	err = exchangeUDP(t.Context(), denied.String())
+	if !errors.Is(err, unix.EACCES) && !errors.Is(err, unix.EPERM) && !errors.Is(err, unix.EHOSTUNREACH) && !errors.Is(err, unix.ENETUNREACH) {
+		t.Fatalf("other UDP host port was not explicitly rejected: %v", err)
+	}
+}
+
+func exchangeUDP(ctx context.Context, address string) error {
+	dialer := net.Dialer{Timeout: 3 * time.Second}
+	connection, err := dialer.DialContext(ctx, "udp", address)
+	if err != nil {
+		return fmt.Errorf("dial UDP test endpoint: %w", err)
+	}
+	defer connection.Close()
+	if err := connection.SetDeadline(time.Now().Add(3 * time.Second)); err != nil {
+		return fmt.Errorf("set UDP test deadline: %w", err)
+	}
+	const message = "localnet UDP probe"
+	if _, err := connection.Write([]byte(message)); err != nil {
+		return fmt.Errorf("send UDP test packet: %w", err)
+	}
+	buffer := make([]byte, 128)
+	n, err := connection.Read(buffer)
+	if err != nil {
+		return fmt.Errorf("receive UDP test packet: %w", err)
+	}
+	if string(buffer[:n]) != message {
+		return fmt.Errorf("unexpected UDP test response %q", buffer[:n])
+	}
+	return nil
 }

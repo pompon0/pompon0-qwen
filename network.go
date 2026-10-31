@@ -7,41 +7,123 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
-	"net/url"
 	"os/exec"
 	"slices"
+	"strconv"
 	"strings"
 )
 
-// ModelEndpoint retains the name and all resolved addresses so the firewall
-// and the sandbox's hosts file use the same startup snapshot.
-type ModelEndpoint struct {
-	Hostname  string
-	Addresses []netip.AddrPort
+// Localnet lists explicitly allowed TCP/UDP host:port destinations. Only names
+// explicitly listed by the user are resolved; Qwen settings cannot add entries.
+type Localnet []localEndpoint
+
+type localEndpoint struct {
+	Host string
+	Port uint16
 }
 
-func modelEndpointFromURL(ctx context.Context, value string) (ModelEndpoint, error) {
-	if value == "" {
-		return ModelEndpoint{}, nil
+// ResolvedLocalnet is the startup DNS snapshot used by both the whitelist and
+// /etc/hosts. Addresses contain only numeric endpoints; Hosts contains DNS names.
+type ResolvedLocalnet struct {
+	Addresses []netip.AddrPort
+	Hosts     map[string][]netip.Addr
+}
+
+func (localnet *Localnet) Set(value string) error {
+	var endpoints Localnet
+	if value != "" {
+		for entry := range strings.SplitSeq(value, ",") {
+			host, portText, err := net.SplitHostPort(strings.TrimSpace(entry))
+			if err != nil {
+				return fmt.Errorf("parse localnet endpoint %q: %w", entry, err)
+			}
+			port, err := strconv.ParseUint(portText, 10, 16)
+			if err != nil {
+				return fmt.Errorf("parse localnet port %q: %w", portText, err)
+			}
+			if host == "" || port == 0 {
+				return fmt.Errorf("localnet endpoint %q requires a hostname or IP address and a nonzero port", entry)
+			}
+			if address, err := netip.ParseAddr(host); err == nil {
+				if address.Zone() != "" {
+					return fmt.Errorf("localnet endpoint %q must not contain an IPv6 zone", entry)
+				}
+				host = address.Unmap().String()
+			} else {
+				// Validate DNS names before resolving them or writing them to hosts.
+				name := strings.TrimSuffix(host, ".")
+				if len(name) == 0 || len(name) > 253 {
+					return fmt.Errorf("invalid localnet hostname %q", host)
+				}
+				for label := range strings.SplitSeq(name, ".") {
+					if len(label) == 0 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+						return fmt.Errorf("invalid localnet hostname %q", host)
+					}
+					for _, character := range label {
+						if !(character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' || character >= '0' && character <= '9' || character == '-' || character == '_') {
+							return fmt.Errorf("invalid localnet hostname %q", host)
+						}
+					}
+				}
+				host = strings.ToLower(host)
+			}
+			endpoints = append(endpoints, localEndpoint{Host: host, Port: uint16(port)})
+		}
 	}
-	endpoint, err := url.Parse(value)
-	if err != nil {
-		return ModelEndpoint{}, fmt.Errorf("url.Parse(): %w", err)
+	slices.SortFunc(endpoints, func(a, b localEndpoint) int {
+		if comparison := strings.Compare(a.Host, b.Host); comparison != 0 {
+			return comparison
+		}
+		return cmp.Compare(a.Port, b.Port)
+	})
+	*localnet = slices.Compact(endpoints)
+	return nil
+}
+
+func (localnet Localnet) String() string {
+	entries := make([]string, len(localnet))
+	for i, endpoint := range localnet {
+		entries[i] = net.JoinHostPort(endpoint.Host, strconv.Itoa(int(endpoint.Port)))
 	}
-	if endpoint.Hostname() == "" {
-		return ModelEndpoint{}, fmt.Errorf("model baseUrl must include a hostname")
-	}
-	port, err := net.DefaultResolver.LookupPort(ctx, "tcp", cmp.Or(endpoint.Port(), endpoint.Scheme))
-	if err != nil {
-		return ModelEndpoint{}, fmt.Errorf("LookupPort(): %w", err)
-	}
-	addresses, err := net.DefaultResolver.LookupNetIP(ctx, "ip", endpoint.Hostname())
-	if err != nil {
-		return ModelEndpoint{}, fmt.Errorf("LookupNetIP(%s): %w", endpoint.Hostname(), err)
-	}
-	result := ModelEndpoint{Hostname: endpoint.Hostname()}
-	for _, address := range addresses {
-		result.Addresses = append(result.Addresses, netip.AddrPortFrom(address.Unmap(), uint16(port)))
+	return strings.Join(entries, ",")
+}
+
+func (Localnet) Type() string { return "host:port,..." }
+
+func (localnet Localnet) Resolve(ctx context.Context) (ResolvedLocalnet, error) {
+	return localnet.resolve(ctx, net.DefaultResolver)
+}
+
+func (localnet Localnet) resolve(ctx context.Context, resolver *net.Resolver) (ResolvedLocalnet, error) {
+	result := ResolvedLocalnet{Hosts: map[string][]netip.Addr{}}
+	for _, endpoint := range localnet {
+		if err := ctx.Err(); err != nil {
+			return ResolvedLocalnet{}, err
+		}
+		var addresses []netip.Addr
+		if address, err := netip.ParseAddr(endpoint.Host); err == nil {
+			addresses = []netip.Addr{address.Unmap()}
+		} else if cached, ok := result.Hosts[endpoint.Host]; ok {
+			addresses = cached
+		} else {
+			var err error
+			addresses, err = resolver.LookupNetIP(ctx, "ip", endpoint.Host)
+			if err != nil {
+				return ResolvedLocalnet{}, fmt.Errorf("LookupNetIP(%s): %w", endpoint.Host, err)
+			}
+			if len(addresses) == 0 {
+				return ResolvedLocalnet{}, fmt.Errorf("localnet hostname %q resolved to no addresses", endpoint.Host)
+			}
+			for i, address := range addresses {
+				addresses[i] = address.Unmap()
+			}
+			slices.SortFunc(addresses, netip.Addr.Compare)
+			addresses = slices.Compact(addresses)
+			result.Hosts[endpoint.Host] = addresses
+		}
+		for _, address := range addresses {
+			result.Addresses = append(result.Addresses, netip.AddrPortFrom(address, endpoint.Port))
+		}
 	}
 	slices.SortFunc(result.Addresses, netip.AddrPort.Compare)
 	result.Addresses = slices.Compact(result.Addresses)

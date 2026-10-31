@@ -45,17 +45,18 @@ func TestRejectInvalidLauncherModes(t *testing.T) {
 	}
 }
 
-func TestLauncherEndpointOverrides(t *testing.T) {
-	want := modelOverrides{Model: "local", AuthType: "openai", BaseURL: "http://192.168.1.50:11434/v1"}
+func TestLauncherRejectsEndpointFlags(t *testing.T) {
 	for _, mode := range [][]string{{}, {"qwen"}, {"isolation-check"}} {
-		arguments := append(slices.Clone(mode), "-mlocal", "--auth-type", "openai", "--openai-base-url="+want.BaseURL)
-		got, err := parseArgs(arguments)
-		if err != nil || got.Config.Overrides != want || len(got.Arguments) != 0 {
-			t.Fatalf("launcher overrides: %+v, %v", got, err)
+		for _, flag := range []string{"--model=local", "-mlocal", "--auth-type=openai", "--openai-base-url=http://192.168.1.50:11434/v1"} {
+			arguments := append(slices.Clone(mode), flag)
+			if _, err := parseArgs(arguments); err == nil {
+				t.Errorf("accepted removed endpoint flag: %v", arguments)
+			}
 		}
 	}
-	got, err := parseArgs([]string{"--model=local", "--", "--model=other", "--auth-type=anthropic", "--openai-base-url=other", "--qwen-version=other"})
-	if err != nil || got.Config.Overrides != (modelOverrides{Model: "local"}) || got.Version != "latest" {
+	forwarded := []string{"--model=other", "--auth-type=anthropic", "--openai-base-url=other", "--qwen-version=other"}
+	got, err := parseArgs(append([]string{"--"}, forwarded...))
+	if err != nil || !slices.Equal(got.Arguments, forwarded) || got.Version != "latest" {
 		t.Fatalf("Qwen arguments affected launcher options: %+v, %v", got, err)
 	}
 	for _, arguments := range [][]string{
@@ -66,6 +67,38 @@ func TestLauncherEndpointOverrides(t *testing.T) {
 		if _, err := parseArgs(arguments); err == nil {
 			t.Errorf("accepted invalid launcher arguments %v", arguments)
 		}
+	}
+}
+
+func TestLocalnetFlag(t *testing.T) {
+	for _, arguments := range [][]string{
+		{"--localnet=192.168.1.50:11434,[fd12::50]:8000"},
+		{"qwen", "--localnet", "192.168.1.50:11434,[fd12::50]:8000"},
+		{"--localnet=192.168.1.50:11434,[fd12::50]:8000", "isolation-check"},
+		{"--localnet", " [::ffff:192.168.1.50]:11434,192.168.1.50:11434,[fd12::50]:8000 "},
+	} {
+		got, err := parseArgs(arguments)
+		if err != nil || got.Config.Localnet.String() != "192.168.1.50:11434,[fd12::50]:8000" {
+			t.Fatalf("localnet %v: %+v, %v", arguments, got, err)
+		}
+	}
+	got, err := parseArgs([]string{"--localnet=Model.TEST:8000,192.168.1.50:11434"})
+	if err != nil || got.Config.Localnet.String() != "192.168.1.50:11434,model.test:8000" {
+		t.Fatalf("DNS localnet entry: %+v, %v", got, err)
+	}
+	for _, arguments := range [][]string{{}, {"--localnet="}, {"--", "--localnet=192.168.1.50:11434"}} {
+		got, err := parseArgs(arguments)
+		if err != nil || len(got.Config.Localnet) != 0 {
+			t.Fatalf("unexpected localnet grant for %v: %+v, %v", arguments, got, err)
+		}
+	}
+	for _, value := range []string{"192.168.1.50", "192.168.1.0/24", "http://192.168.1.50:8000", "192.168.1.50:0", "192.168.1.50:65536", "[fe80::1%eth0]:8000", "192.168.1.50:8000,", ",", " ", ":8000", "model..test:8000", "model.test:http", "bad name:8000", "bad\nname:8000", "-model.test:8000"} {
+		if _, err := parseArgs([]string{"--localnet", value}); err == nil {
+			t.Errorf("accepted invalid localnet %q", value)
+		}
+	}
+	if _, err := parseArgs([]string{"--localnet"}); err == nil {
+		t.Fatal("accepted localnet without a value")
 	}
 }
 
@@ -81,9 +114,14 @@ func TestLauncherHelp(t *testing.T) {
 	if strings.Contains(output.String(), "internal-") || strings.Contains(output.String(), string(ModeIsolationProbe)) {
 		t.Fatal("private protocol flags exposed in help")
 	}
-	for _, name := range []string{"qwen", "isolation-check", "help", "--model", "--auth-type", "--openai-base-url"} {
+	for _, name := range []string{"qwen", "isolation-check", "help", "--qwen-version", "--localnet"} {
 		if !strings.Contains(output.String(), name) {
 			t.Errorf("help is missing %s", name)
+		}
+	}
+	for _, removed := range []string{"--model", "--auth-type", "--openai-base-url"} {
+		if strings.Contains(output.String(), removed) {
+			t.Errorf("help advertises removed launcher flag %s", removed)
 		}
 	}
 	for _, misleading := range []string{"help for qwen-box", "[command] --help"} {

@@ -44,16 +44,17 @@ marker is needed.
 * `qwen-box isolation-check` tests filesystem, privileges, and sample network connections.
 * `qwen-box help` prints help without starting the sandbox.
 * `--qwen-version VERSION` selects a published npm version or dist-tag; put it before `--`.
+* `--localnet host:port,...` explicitly allows local TCP and UDP endpoints; omit it for no local exceptions.
 
 Launcher flags may appear before or after the optional mode, but must precede
-`--`. The launcher recognizes `--model`/`-m`, `--auth-type`, and
-`--openai-base-url` for endpoint resolution. These overrides are not forwarded
-automatically; repeat them after `--` when Qwen also needs them. Unknown launcher
-flags and extra positional arguments before `--` are rejected. Arguments after
-`--` are forwarded unchanged and cannot select a launcher mode.
+`--`. The launcher recognizes `--qwen-version`, `--localnet`, and `--help`/`-h`. Model and
+endpoint flags belong to Qwen and must follow `--`. Unknown launcher flags and
+extra positional arguments before `--` are rejected. Arguments after `--` are
+forwarded unchanged and cannot select a launcher mode or change the endpoint
+used to configure the firewall.
 
 ```sh
-qwen-box --model other -- --model other --prompt "Review this repository"
+qwen-box -- --prompt "Review this repository"
 qwen-box -- --help  # Qwen help
 qwen-box --help     # launcher help
 ```
@@ -65,7 +66,7 @@ The default version is `latest`. Select a specific release or npm dist-tag at st
 ```sh
 qwen-box                              # latest
 qwen-box --qwen-version 0.26.1         # specific release
-qwen-box --qwen-version latest --model your-model qwen -- --model your-model
+qwen-box --qwen-version latest qwen -- --model your-model
 qwen-box --qwen-version 0.26.1 isolation-check
 ```
 
@@ -114,8 +115,8 @@ Configure the model, endpoint, and authentication in your normal host
 - Sessions, logs, temporary files, and other Qwen runtime writes persist in
   shared launcher state. Manual host Qwen sessions are not mounted.
 - If host configuration is absent, Qwen can create launcher-owned configuration.
-  The endpoint resolver still reads host settings; use host settings or launcher
-  overrides for firewall exceptions.
+  Qwen settings and credentials never grant local network access; use the explicit
+  launcher `--localnet` flag for firewall exceptions.
 - The host `.qwen` directory must not be a symlink. New launcher state and cache
   directories use mode 0700; existing directory permissions are unchanged.
 
@@ -189,41 +190,33 @@ Public IPv4 and IPv6 egress is allowed. Host addresses, directly connected
 networks, and private/special address ranges are blocked in both families. DNS
 uses `1.1.1.1` and `2606:4700:4700::1111`. Public IPv6 connectivity depends on
 the host's IPv6 routes; the launcher does not disable either address family.
-The launcher derives exact TCP firewall exceptions from the selected model's
-`baseUrl` in the shared host user settings. The Ollama example above automatically
-permits `192.168.1.50:11434`; no separate firewall environment variable is needed.
-Selection uses `security.auth.selectedType` and `model.name`, with `model.baseUrl`
-to distinguish duplicate model IDs. Launcher endpoint overrides (`--model`/`-m`,
-`--auth-type`, and `--openai-base-url`) and forwarded environment variables are
-also considered.
-These flags affect endpoint resolution only. Repeat them after `--` to pass them
-to Qwen; arguments after `--` are never inspected by the launcher. Unselected
-providers grant no access.
 
-`baseUrl` can contain a DNS name or a literal IPv4/IPv6 address. IPv6 URLs use
-brackets, for example `http://[fd12:3456::50]:11434/v1`. The launcher resolves the
-selected hostname using the host's resolver at startup and allows every returned
-IPv4/IPv6 address on the URL's TCP port. HTTP and HTTPS default to ports 80 and
-443. DNS resolution failures abort startup.
+Local access is controlled only by the launcher's explicit `--localnet` flag:
 
-The resolved hostname is pinned in the sandbox's `/etc/hosts`, so Qwen uses the
-same addresses as the firewall, including names supplied by LAN DNS or the host's
-hosts file. Relaunch to pick up DNS changes. Address resolution does not translate
-loopback or link-local addresses into host access; the endpoint must still be
-reachable from the container. The virtual subnets are `10.0.2.0/24` and
-`fd00:2::/64`; guest addresses differ from host addresses so services on the host
-are not shadowed by the guest.
+- Use comma-separated `IP:port` or `dns:port` endpoints, with brackets around IPv6.
+  Each entry allows both TCP and UDP on the specified port.
+- For the Ollama configuration above, run
+  `qwen-box --localnet=192.168.1.50:11434`.
+- For multiple servers, use
+  `qwen-box --localnet=192.168.1.50:11434,[fd12::50]:8000 -- --prompt "Review this"`.
+- For hostnames, use `qwen-box --localnet=ollama.lan:11434`.
+- Entries must include a numeric nonzero port. URLs, CIDRs, scoped IPv6
+  addresses, and empty entries are rejected. `--localnet=` explicitly allows none.
+- DNS entries are resolved on the host before constructing the whitelist or
+  creating the pod. All returned IPv4 and IPv6 addresses are allowed on the
+  specified port for both TCP and UDP. Lookup failure aborts startup without a partial whitelist.
+- Only the explicitly listed or resolved IP addresses and ports bypass blocks. Other
+  ports remain blocked. Repeating the flag replaces the previous list.
+- Qwen configuration, credentials, forwarded environment variables, and arguments
+  after `--` cannot grant exceptions. The launcher does not parse model settings.
+- Explicit DNS entries are pinned to that same startup snapshot in sandbox
+  `/etc/hosts`, including names resolved by host-only LAN DNS. Names found only
+  in Qwen settings do not grant exceptions or receive hosts entries.
+- Exceptions are fixed at startup. Relaunch to pick up DNS changes or a new list.
+- Loopback and link-local addresses are not translated into host access. The
+  virtual subnets are `10.0.2.0/24` and `fd00:2::/64`; guest addresses differ from
+  host addresses so services on the host are not shadowed by the guest.
 
-Automatic exceptions read the host's shared user settings, not repository-supplied
-settings. Put the endpoint directly in `baseUrl`; endpoint variable references
-can use the settings `env` field or forwarded environment. `.env` files can still
-supply credentials to Qwen but are not read by the launcher's endpoint resolver.
-JSON comments in settings are supported. Invalid or ambiguous endpoint settings
-abort startup; repair `~/.qwen/settings.json` on the host.
-
-The exceptions override destination blocks only for the selected endpoint's
-resolved addresses and TCP port. It is fixed at startup: relaunch after changing
-endpoints or switching to a model on a different LAN server.
 The well-known NAT64 prefix follows the equivalent IPv4 destination blocks.
 IPv6 control traffic needed for neighbor/router discovery and path-MTU errors
 is allowed without granting TCP/UDP access to blocked destinations.
@@ -233,19 +226,17 @@ Relaunch after LAN/VPN route changes.
 
 | File | Responsibility |
 | --- | --- |
-| `main.go` | CLI entry point, signals, and exit status |
-| `cli.go` | Argument parsing, command validation, model overrides, and help |
+| `main.go` | CLI entry point, launcher flags, command validation, help, signals, and exit status |
 | `config.go` | Git repository discovery, tool discovery, state paths, environment |
-| `network.go` | Model DNS/port resolution, host IP addresses, routes, and prefix normalization |
-| `qwen.go` | npm version selection and cached runtime execution |
-| `qwen_config.go` | Shared configuration inputs, credential seeding, and model endpoint resolution |
-| `policy.go` | nftables destination policy and exact model-server TCP exception |
+| `network.go` | Explicit localnet parsing and DNS resolution, host IPs, routes, and prefix normalization |
+| `tools.go` | Host tool commands, npm version selection, shared configuration inputs, and credential seeding |
+| `policy.go` | nftables destination policy and explicit localnet TCP/UDP exceptions |
 | `sandbox.go` | Minimal rootfs, explicit host mounts, and Podman command arguments |
 | `supervisor.go` | Podman setup, workload execution, cancellation, and container cleanup |
 | `check.go` | Native Go isolation diagnostics executed inside the sandbox |
 | `packaging/aur/` | AUR recipe, metadata, and publishing workflow |
 
-The launcher registers version and endpoint override flags with `pflag`, selects
+The launcher registers version, localnet, and help flags with `pflag`, selects
 the optional mode from launcher positional arguments, and passes only arguments
 after `--` to Qwen without inspecting them.
 The launcher is mounted read-only inside the sandbox only for `isolation-check`.
@@ -264,7 +255,7 @@ private PID/IPC/UTS/network namespaces, an init process, a read-only root
 filesystem, and its standard seccomp restrictions.
 All workload capabilities are dropped and privilege gains are disabled.
 
-The launcher generates `/etc/hosts` with localhost and pinned model addresses,
+The launcher generates `/etc/hosts` with localhost and resolved localnet entries,
 `/etc/resolv.conf` with its fixed public DNS servers, `/etc/hostname` with
 `qwen-box`, and minimal `/etc/passwd` and `/etc/group` entries for `qwen`.
 The passwd entry and `HOME` use the resolved host home path. `/bin`, `/sbin`,
@@ -283,7 +274,7 @@ invocation loads nftables rules inside the container's network namespace, then
 Qwen is started by an ordinary `podman exec` with no capabilities. This setup
 privilege belongs to the rootless namespace and never requires host root. Failure
 to install the policy aborts startup. The policy permits public IPv4/IPv6 and exact
-model-server TCP exceptions for the resolved addresses; private, host, and
+explicit `--localnet` TCP/UDP exceptions; private, host, and
 directly connected destinations remain blocked in both address families.
 No host firewall rules are changed.
 
@@ -313,8 +304,8 @@ project/cache/Qwen state, and Node.js and selected Qwen version execution on a
 configured Linux host.
 
 A live integration test creates and removes a rootless container using local test
-servers, checks filesystem/privilege isolation, and verifies pinned model
-hostnames and IPv4/IPv6 TCP-port exceptions. It also verifies the preserved
+servers, checks filesystem/privilege isolation, and verifies explicit
+IPv4/IPv6 localnet TCP/UDP-port exceptions and pinned hostname access. It also verifies the preserved
 working directory, read-only Git metadata and host settings, writable session
 state, independent credential replacement, and persistent isolated caches. It
 uses a test executable inside the container and does not download Qwen, build an

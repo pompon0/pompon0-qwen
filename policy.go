@@ -9,11 +9,11 @@ import (
 
 // NetworkPolicy describes the destinations permitted by the supervisor.
 type NetworkPolicy struct {
-	Blocked      []netip.Prefix
-	ModelServers []netip.AddrPort
+	Blocked  []netip.Prefix
+	Localnet []netip.AddrPort
 }
 
-func newNetworkPolicy(host HostNetwork, servers []netip.AddrPort) NetworkPolicy {
+func newNetworkPolicy(host HostNetwork, localnet []netip.AddrPort) NetworkPolicy {
 	var blocked []netip.Prefix
 	for value := range strings.FieldsSeq(`0.0.0.0/8 10.0.0.0/8 100.64.0.0/10 127.0.0.0/8
 		169.254.0.0/16 172.16.0.0/12 192.0.0.0/24 192.0.2.0/24
@@ -38,11 +38,11 @@ func newNetworkPolicy(host HostNetwork, servers []netip.AddrPort) NetworkPolicy 
 			blocked = append(blocked, netip.PrefixFrom(netip.AddrFrom16(address), 96+prefix.Bits()))
 		}
 	}
-	return NetworkPolicy{Blocked: collapsePrefixes(blocked), ModelServers: servers}
+	return NetworkPolicy{Blocked: collapsePrefixes(blocked), Localnet: localnet}
 }
 
 // Rules are installed only inside the managed Podman container, before Qwen.
-// No host firewall is modified. The model exception precedes destination blocks.
+// No host firewall is modified. Explicit localnet exceptions precede destination blocks.
 func (policy NetworkPolicy) NFTables() string {
 	var blocked4, blocked6 []string
 	for _, prefix := range policy.Blocked {
@@ -59,12 +59,14 @@ func (policy NetworkPolicy) NFTables() string {
 		return "elements = { " + strings.Join(blocked, ", ") + " }"
 	}
 	var exceptions []string
-	for _, model := range policy.ModelServers {
+	for _, endpoint := range policy.Localnet {
 		family := "ip"
-		if model.Addr().Is6() {
+		if endpoint.Addr().Is6() {
 			family = "ip6"
 		}
-		exceptions = append(exceptions, fmt.Sprintf("%s daddr %s tcp dport %d accept", family, model.Addr(), model.Port()))
+		for _, protocol := range []string{"tcp", "udp"} {
+			exceptions = append(exceptions, fmt.Sprintf("%s daddr %s %s dport %d accept", family, endpoint.Addr(), protocol, endpoint.Port()))
+		}
 	}
 	return fmt.Sprintf(`table inet qwen_egress {
  set blocked4 { type ipv4_addr; flags interval; %s }

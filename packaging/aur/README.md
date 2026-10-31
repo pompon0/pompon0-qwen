@@ -33,6 +33,13 @@ Runtime mounting structure:
 
 See the main README for the complete mount layout and cleanup behavior.
 
+Local network exceptions require the launcher's explicit comma-separated
+`--localnet host:port,...` flag. Literal IPs and DNS names are accepted; names are
+resolved on the host before the whitelist is constructed and pinned in sandbox
+`/etc/hosts`. Each listed port is allowed for both TCP and UDP.
+Qwen configuration and forwarded Qwen arguments never grant
+exceptions; without the flag, local destinations remain blocked.
+
 ## Before submitting
 
 * Make the GitHub repository public and commit the application source.

@@ -1,40 +1,17 @@
 package main
 
 import (
-	"bytes"
-	"context"
 	"fmt"
-	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 )
 
-// Tools holds verified executable paths. The read-only /usr mount preserves
-// these paths inside the sandbox for Qwen and the isolation probe.
-type Tools struct {
-	Podman, NFT, IP, Node, NPM string
-}
-
-func (t *Tools) RunPodman(ctx context.Context, input io.Reader, args ...string) (string, error) {
-	ctx, cancel := context.WithTimeout(ctx, controlTimeout)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, t.Podman, append([]string{"--remote=false"}, args...)...)
-	cmd.Stdin = input
-	var output, diagnostics bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &output, &diagnostics
-	if err := cmd.Run(); err != nil {
-		return "", fmt.Errorf("podman %s: %w (%s)", args[0], err, strings.TrimSpace(diagnostics.String()))
-	}
-	return strings.TrimSpace(output.String()), nil
-}
-
 // Config holds host paths and tools used to build sandbox mounts and environment.
 type Config struct {
-	Overrides        modelOverrides // Launcher endpoint overrides; Qwen receives only arguments after --.
-	Project          string         // Repository mounted at the same absolute path; root .git is read-only.
-	WorkingDirectory string         // Host working directory, a subdirectory of Project.
+	Localnet         Localnet // Explicit TCP/UDP destinations allowed through local/private destination blocks.
+	Project          string   // Repository mounted at the same absolute path; root .git is read-only.
+	WorkingDirectory string   // Host working directory, a subdirectory of Project.
 	// Home is the resolved host home directory; it is not mounted as a whole.
 	// Derived paths and settings:
 	//   - Home/.local/state/qwen-box -> Home/.qwen [rw]: qwen state shared across qwen-box instances.
@@ -46,15 +23,11 @@ type Config struct {
 	Tools Tools // Host executables used to create and supervise the sandbox.
 }
 
-type modelOverrides struct {
-	Model, AuthType, BaseURL string
-}
-
 func (c Config) stateDir() string { return filepath.Join(c.Home, ".local/state/qwen-box") }
 
 func (c Config) cacheDir() string { return filepath.Join(c.Home, ".cache/qwen-box") }
 
-// discoverConfig completes the parsed configuration from the host working
+// discoverConfig builds the sandbox configuration from the host working
 // directory and environment. It rejects root users and resolves symlinks in the
 // working and home directories before choosing the nearest ancestor with a .git
 // directory or regular file. The search excludes the filesystem root; a symlink
