@@ -29,27 +29,13 @@ func TestPodmanIntegration(t *testing.T) {
 	for _, name := range []string{"OPENAI_BASE_URL", "OPENAI_API_KEY", "OPENAI_MODEL"} {
 		t.Setenv(name, "")
 	}
-	addresses, err := net.InterfaceAddrs()
-	if err != nil {
-		t.Fatal(err)
-	}
-	var hostIP netip.Addr
-	for _, address := range addresses {
-		ip, _, err := net.ParseCIDR(address.String())
-		if err == nil && ip.To4() != nil && !ip.IsLoopback() {
-			hostIP = netip.MustParseAddr(ip.String())
-			break
-		}
-	}
-	if !hostIP.IsValid() {
-		t.Fatal("no host IPv4 address available")
-	}
 	for _, test := range []struct {
 		name, network string
 		bind, target  netip.Addr
 		pastaOptions  string
 	}{
-		{name: "IPv4", network: "tcp4", bind: hostIP, target: hostIP},
+		{name: "IPv4", network: "tcp4", bind: netip.MustParseAddr("127.0.0.1"), target: netip.MustParseAddr("10.0.57.1"),
+			pastaOptions: ",--map-host-loopback,10.0.57.1"},
 		{name: "IPv6", network: "tcp6", bind: netip.IPv6Loopback(), target: netip.MustParseAddr("fd00:57::1"),
 			pastaOptions: ",--map-host-loopback,fd00:57::1"},
 	} {
@@ -72,7 +58,7 @@ func TestPodmanIntegration(t *testing.T) {
 			deniedAddress := netip.AddrPortFrom(test.target, netip.MustParseAddrPort(other.Listener.Addr().String()).Port())
 			directory := t.TempDir()
 			root := filepath.Join(directory, "run")
-			config := Config{Project: filepath.Join(directory, "project"), Home: filepath.Join(directory, "home"), WorkingDirectory: filepath.Join(directory, "project", "nested"), Tools: Tools{Podman: "/usr/bin/podman", NFT: "/usr/bin/nft", IP: "/usr/bin/ip", Node: "/usr/bin/node", NPM: "/usr/bin/npm"}}
+			config := Config{Project: filepath.Join(directory, "project"), Home: filepath.Join(directory, "home"), WorkingDirectory: filepath.Join(directory, "project", "nested"), Tools: Tools{Podman: "/usr/bin/podman", NFT: "/usr/bin/nft", Node: "/usr/bin/node", NPM: "/usr/bin/npm"}}
 			for _, path := range []string{filepath.Join(config.Project, ".git"), config.WorkingDirectory, filepath.Join(config.Home, ".qwen"), filepath.Join(config.cacheDir(), "npm"), config.stateDir(), root} {
 				if err := os.MkdirAll(path, 0o700); err != nil {
 					t.Fatal(err)
@@ -98,16 +84,11 @@ func TestPodmanIntegration(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			config.Localnet = invocation.Config.Localnet
-			localnet, err := config.Localnet.Resolve(t.Context())
+			config.Localnet, err = invocation.Localnet.Resolve(t.Context())
 			if err != nil {
 				t.Fatal(err)
 			}
-			// DNS lookup is covered by TestLocalnetDNSResolution; exercise the
-			// resulting pinned hostname through the container's real resolver.
-			localnet.Hosts["localnet.test"] = []netip.Addr{test.target}
-			probeEnvironment["POMPON_TEST_MODEL"] = net.JoinHostPort("localnet.test", strconv.Itoa(int(modelAddress.Port())))
-			if err := writeRunFiles(root, config.Home, ModeIsolationCheck, localnet); err != nil {
+			if err := writeRunFiles(root, config.Home, ModeIsolationCheck); err != nil {
 				t.Fatal(err)
 			}
 			plan, err := buildSandbox(config, Args{Mode: ModeIsolationCheck}, root)
@@ -118,8 +99,8 @@ func TestPodmanIntegration(t *testing.T) {
 				plan.RunArguments = slices.Insert(plan.RunArguments, 1, "--env", key+"="+value)
 			}
 			plan.Workload = []string{sandboxCheckerPath, "-test.run=^TestPodmanProbe$", "-test.v"}
-			// The test-only IPv6 mapping reaches host loopback through a ULA. This
-			// exercises real IPv6 packets without requiring a global host IPv6 route.
+			// Test-only mappings reach host loopback through private addresses,
+			// exercising non-public blocks without depending on the host's LAN IP.
 			if test.pastaOptions != "" {
 				for i, argument := range plan.RunArguments {
 					if strings.HasPrefix(argument, "--network=pasta:") {
@@ -127,7 +108,9 @@ func TestPodmanIntegration(t *testing.T) {
 					}
 				}
 			}
-			policy := newNetworkPolicy(HostNetwork{Addresses: []netip.Addr{test.target}}, localnet.Addresses)
+			policy := newNetworkPolicy(config.Localnet)
+			// Exercise nftables auto-merge with overlapping IPv4 and IPv6 ranges.
+			policy.Blocked = append(slices.Clone(policy.Blocked), netip.MustParsePrefix("10.0.0.0/9"), netip.MustParsePrefix("fd00::/8"))
 			ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 			defer cancel()
 			if err := scope.Run(ctx, func(ctx context.Context, s scope.Scope) error {

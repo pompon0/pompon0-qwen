@@ -12,7 +12,6 @@ pkgbase = qwen-box-git
 	depends = nftables
 	depends = coreutils
 	depends = glibc
-	depends = iproute2
 	depends = nodejs>=22
 	depends = npm
 	provides = qwen-box

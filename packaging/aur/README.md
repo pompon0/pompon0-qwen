@@ -35,10 +35,14 @@ See the main README for the complete mount layout and cleanup behavior.
 
 Local network exceptions require the launcher's explicit comma-separated
 `--localnet host:port,...` flag. Literal IPs and DNS names are accepted; names are
-resolved on the host before the whitelist is constructed and pinned in sandbox
-`/etc/hosts`. Each listed port is allowed for both TCP and UDP.
+resolved on the host before the whitelist is constructed. Qwen resolves names
+independently; resolution is assumed to remain stable after startup.
+Each listed port is allowed for both TCP and UDP.
 Qwen configuration and forwarded Qwen arguments never grant
-exceptions; without the flag, local destinations remain blocked.
+exceptions; without the flag, non-public destinations remain blocked.
+The blacklist uses fixed private/special-use ranges. The launcher does not
+inspect host addresses or routes and does not invoke `ip`; publicly routable
+host and LAN addresses follow the normal public-egress policy.
 
 ## Before submitting
 

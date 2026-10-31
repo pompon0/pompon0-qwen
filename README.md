@@ -186,8 +186,13 @@ and uses the host `TERM`.
 
 ### Network access
 
-Public IPv4 and IPv6 egress is allowed. Host addresses, directly connected
-networks, and private/special address ranges are blocked in both families. DNS
+Public IPv4 and IPv6 egress is allowed. A fixed blacklist blocks private and
+special-use address ranges in both families, including loopback, link-local,
+CGNAT, multicast, and reserved/documentation ranges. Host interfaces and routes
+are not inspected: public addresses remain allowed even when assigned to the
+host or used on a directly connected network. nftables interval sets use
+`auto-merge` to handle overlapping and adjacent ranges; the launcher does not
+sort or collapse blacklist prefixes. DNS
 uses `1.1.1.1` and `2606:4700:4700::1111`. Public IPv6 connectivity depends on
 the host's IPv6 routes; the launcher does not disable either address family.
 
@@ -209,9 +214,8 @@ Local access is controlled only by the launcher's explicit `--localnet` flag:
   ports remain blocked. Repeating the flag replaces the previous list.
 - Qwen configuration, credentials, forwarded environment variables, and arguments
   after `--` cannot grant exceptions. The launcher does not parse model settings.
-- Explicit DNS entries are pinned to that same startup snapshot in sandbox
-  `/etc/hosts`, including names resolved by host-only LAN DNS. Names found only
-  in Qwen settings do not grant exceptions or receive hosts entries.
+- Qwen resolves DNS names independently using the sandbox's public DNS servers;
+  resolution is assumed to remain stable after startup.
 - Exceptions are fixed at startup. Relaunch to pick up DNS changes or a new list.
 - Loopback and link-local addresses are not translated into host access. The
   virtual subnets are `10.0.2.0/24` and `fd00:2::/64`; guest addresses differ from
@@ -220,7 +224,6 @@ Local access is controlled only by the launcher's explicit `--localnet` flag:
 The well-known NAT64 prefix follows the equivalent IPv4 destination blocks.
 IPv6 control traffic needed for neighbor/router discovery and path-MTU errors
 is allowed without granting TCP/UDP access to blocked destinations.
-Relaunch after LAN/VPN route changes.
 
 ## Code layout
 
@@ -228,7 +231,7 @@ Relaunch after LAN/VPN route changes.
 | --- | --- |
 | `main.go` | CLI entry point, launcher flags, command validation, help, signals, and exit status |
 | `config.go` | Git repository discovery, tool discovery, state paths, environment |
-| `network.go` | Explicit localnet parsing and DNS resolution, host IPs, routes, and prefix normalization |
+| `network.go` | Explicit localnet parsing and DNS resolution |
 | `tools.go` | Host tool commands, npm version selection, shared configuration inputs, and credential seeding |
 | `policy.go` | nftables destination policy and explicit localnet TCP/UDP exceptions |
 | `sandbox.go` | Minimal rootfs, explicit host mounts, and Podman command arguments |
@@ -255,7 +258,7 @@ private PID/IPC/UTS/network namespaces, an init process, a read-only root
 filesystem, and its standard seccomp restrictions.
 All workload capabilities are dropped and privilege gains are disabled.
 
-The launcher generates `/etc/hosts` with localhost and resolved localnet entries,
+The launcher generates `/etc/hosts` with localhost entries,
 `/etc/resolv.conf` with its fixed public DNS servers, `/etc/hostname` with
 `qwen-box`, and minimal `/etc/passwd` and `/etc/group` entries for `qwen`.
 The passwd entry and `HOME` use the resolved host home path. `/bin`, `/sbin`,
@@ -274,8 +277,8 @@ invocation loads nftables rules inside the container's network namespace, then
 Qwen is started by an ordinary `podman exec` with no capabilities. This setup
 privilege belongs to the rootless namespace and never requires host root. Failure
 to install the policy aborts startup. The policy permits public IPv4/IPv6 and exact
-explicit `--localnet` TCP/UDP exceptions; private, host, and
-directly connected destinations remain blocked in both address families.
+explicit `--localnet` TCP/UDP exceptions; the fixed non-public ranges remain
+blocked in both address families. Public host/LAN addresses are not blocked.
 No host firewall rules are changed.
 
 The launcher attempts to remove its named container after the workload exits,
@@ -305,12 +308,13 @@ configured Linux host.
 
 A live integration test creates and removes a rootless container using local test
 servers, checks filesystem/privilege isolation, and verifies explicit
-IPv4/IPv6 localnet TCP/UDP-port exceptions and pinned hostname access. It also verifies the preserved
+IPv4/IPv6 localnet TCP/UDP-port exceptions. It also verifies the preserved
 working directory, read-only Git metadata and host settings, writable session
 state, independent credential replacement, and persistent isolated caches. It
 uses a test executable inside the container and does not download Qwen, build an
-image, or exercise a complete Qwen conversation. A test-only IPv6 mapping avoids
-needing a global IPv6 route on the test host:
+image, or exercise a complete Qwen conversation. Test-only IPv4/IPv6 mappings
+reach host-loopback servers through private addresses, avoiding dependence on
+the host's LAN addressing or a global IPv6 route:
 
 ```sh
 POMPON_PODMAN_INTEGRATION=1 go test -run '^TestPodmanIntegration$' -v .

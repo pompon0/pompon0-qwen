@@ -1,7 +1,9 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,9 +11,9 @@ import (
 
 // Config holds host paths and tools used to build sandbox mounts and environment.
 type Config struct {
-	Localnet         Localnet // Explicit TCP/UDP destinations allowed through local/private destination blocks.
-	Project          string   // Repository mounted at the same absolute path; root .git is read-only.
-	WorkingDirectory string   // Host working directory, a subdirectory of Project.
+	Localnet         []netip.AddrPort // Explicit TCP/UDP exceptions to fixed non-public blocks, resolved at startup.
+	Project          string           // Repository mounted at the same absolute path; root .git is read-only.
+	WorkingDirectory string           // Host working directory, a subdirectory of Project.
 	// Home is the resolved host home directory; it is not mounted as a whole.
 	// Derived paths and settings:
 	//   - Home/.local/state/qwen-box -> Home/.qwen [rw]: qwen state shared across qwen-box instances.
@@ -27,14 +29,14 @@ func (c Config) stateDir() string { return filepath.Join(c.Home, ".local/state/q
 
 func (c Config) cacheDir() string { return filepath.Join(c.Home, ".cache/qwen-box") }
 
-// discoverConfig builds the sandbox configuration from the host working
+// discoverConfig resolves explicit localnet entries and builds sandbox configuration from the host working
 // directory and environment. It rejects root users and resolves symlinks in the
 // working and home directories before choosing the nearest ancestor with a .git
 // directory or regular file. The search excludes the filesystem root; a symlink
 // or other invalid .git marker causes an error. The sandbox working directory
 // uses the same resolved absolute path as the host working directory.
 //
-// It requires executable podman, nft, ip, node, and npm files in /usr/bin, then
+// It requires executable podman, nft, node, and npm files in /usr/bin, then
 // creates shared persistent state at ~/.local/state/qwen-box for all
 // launcher executions, regardless of repository. It resolves the state
 // path's symlinks and rejects state inside the repository. Home is the resolved
@@ -51,7 +53,8 @@ func (c Config) cacheDir() string { return filepath.Join(c.Home, ".cache/qwen-bo
 // xterm-256color), and forwards only OPENAI_BASE_URL,
 // OPENAI_API_KEY, and OPENAI_MODEL from the remaining host environment, including
 // explicitly empty values. Callers must discard the configuration on error.
-func discoverConfig(c Config) (Config, error) {
+func discoverConfig(ctx context.Context, localnet Localnet) (Config, error) {
+	var c Config
 	if os.Geteuid() == 0 {
 		return c, fmt.Errorf("run as your ordinary host user, without sudo")
 	}
@@ -80,6 +83,10 @@ func discoverConfig(c Config) (Config, error) {
 	if err != nil {
 		return c, err
 	}
+	c.Localnet, err = localnet.Resolve(ctx)
+	if err != nil {
+		return c, err
+	}
 	// Share Qwen runtime state across launcher executions and repositories.
 	c.Home = home
 	if err := os.MkdirAll(c.stateDir(), 0o700); err != nil {
@@ -104,11 +111,10 @@ func discoverTools() (Tools, error) {
 	t := Tools{
 		Podman: "/usr/bin/podman",
 		NFT:    "/usr/bin/nft",
-		IP:     "/usr/bin/ip",
 		Node:   "/usr/bin/node",
 		NPM:    "/usr/bin/npm",
 	}
-	for _, path := range []string{t.Podman, t.NFT, t.IP, t.Node, t.NPM} {
+	for _, path := range []string{t.Podman, t.NFT, t.Node, t.NPM} {
 		info, err := os.Stat(path)
 		if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
 			return Tools{}, fmt.Errorf("missing executable %s; see help", path)

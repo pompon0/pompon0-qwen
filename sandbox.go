@@ -22,23 +22,15 @@ type SandboxPlan struct {
 	Workload     []string
 }
 
-// runSandbox resolves explicit localnet entries and discovers the host network
-// before starting any workload. The launcher owns its /tmp run directory and removes it after
+// runSandbox resolves explicit localnet entries before starting any workload.
+// The launcher owns its /tmp run directory and removes it after
 // supervision ends; shared Qwen state and caches survive the run.
 func runSandbox(ctx context.Context, invocation Args) error {
-	config, err := discoverConfig(invocation.Config)
+	config, err := discoverConfig(ctx, invocation.Localnet)
 	if err != nil {
 		return err
 	}
-	localnet, err := config.Localnet.Resolve(ctx)
-	if err != nil {
-		return err
-	}
-	network, err := discoverNetwork(ctx, config.Tools.IP)
-	if err != nil {
-		return err
-	}
-	policy := newNetworkPolicy(network, localnet.Addresses)
+	policy := newNetworkPolicy(config.Localnet)
 	runDir, err := os.MkdirTemp("/tmp", "qwen-box-run-")
 	if err != nil {
 		return fmt.Errorf("MkdirTemp(): %w", err)
@@ -47,7 +39,7 @@ func runSandbox(ctx context.Context, invocation Args) error {
 	if err := prepareQwenState(config.Home, config.stateDir()); err != nil {
 		return err
 	}
-	if err := writeRunFiles(runDir, config.Home, invocation.Mode, localnet); err != nil {
+	if err := writeRunFiles(runDir, config.Home, invocation.Mode); err != nil {
 		return err
 	}
 	plan, err := buildSandbox(config, invocation, runDir)
@@ -153,11 +145,10 @@ func bindMount(source, target string, writable bool) string {
 
 // writeRunFiles assembles the externally managed rootfs passed to Podman; it
 // does not build or extract a container image. It creates mount-point directories,
-// /usr symlinks, and generated hosts/DNS/hostname/passwd/group files. Localnet
-// hosts entries use the same DNS snapshot as the firewall. Podman overlays
+// /usr symlinks, and generated hosts/DNS/hostname/passwd/group files. Podman overlays
 // separate writable tmpfs mounts on /tmp and /run, so their contents do
 // not live in this skeleton. The diagnostic host-canary stays outside rootfs.
-func writeRunFiles(runDir, home string, mode Mode, localnet ResolvedLocalnet) error {
+func writeRunFiles(runDir, home string, mode Mode) error {
 	root := filepath.Join(runDir, "rootfs")
 	// This is a mount skeleton, not an OS image. Executables and libraries come
 	// from read-only host mounts; project, cache, and shared Qwen state persist writes.
@@ -171,15 +162,9 @@ func writeRunFiles(runDir, home string, mode Mode, localnet ResolvedLocalnet) er
 			return fmt.Errorf("Symlink(%s): %w", name, err)
 		}
 	}
-	hosts := "127.0.0.1 localhost\n::1 localhost\n"
-	for _, hostname := range slices.Sorted(maps.Keys(localnet.Hosts)) {
-		for _, address := range localnet.Hosts[hostname] {
-			hosts += fmt.Sprintf("%s %s\n", address, hostname)
-		}
-	}
 	files := map[string]string{
 		"etc/resolv.conf": "nameserver 1.1.1.1\nnameserver 2606:4700:4700::1111\n",
-		"etc/hosts":       hosts,
+		"etc/hosts":       "127.0.0.1 localhost\n::1 localhost\n",
 		"etc/passwd":      fmt.Sprintf("qwen:x:0:0:Qwen:%s:/usr/bin/bash\n", home),
 		"etc/group":       "qwen:x:0:\n",
 		"etc/hostname":    "qwen-box\n",

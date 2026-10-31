@@ -83,7 +83,7 @@ const (
 type Args struct {
 	Mode      Mode
 	Version   QwenVersion
-	Config    Config
+	Localnet  Localnet
 	Arguments []string
 }
 
@@ -92,7 +92,7 @@ func parseArgs(arguments []string) (Args, error) {
 	flags := pflag.NewFlagSet("qwen-box", pflag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	flags.Var(&result.Version, "qwen-version", "Qwen npm version or dist-tag")
-	flags.Var(&result.Config.Localnet, "localnet", "Comma-separated TCP/UDP IP:port or DNS:port destinations allowed on local networks")
+	flags.Var(&result.Localnet, "localnet", "Comma-separated TCP/UDP IP:port or DNS:port destinations allowed on local networks")
 	help := flags.BoolP("help", "h", false, "Launcher command help")
 	// The first -- separates launcher options from opaque Qwen arguments.
 	var forwarded []string
@@ -179,7 +179,7 @@ Use qwen-box help [command] for launcher command help.
 Arguments after -- are forwarded to Qwen Code unchanged, including -h/--help.
 Only --localnet grants local network exceptions; Qwen settings and arguments do not.
 
-Requires Podman, nftables, iproute2, Node.js, and npm.
+Requires Podman, nftables, Node.js, and npm.
 npm installs and caches the selected Qwen version at runtime inside the sandbox.
 Launcher runs share writable Qwen state and caches, separately from manual runs.
 Selected host ~/.qwen configuration entries are mounted read-only.
