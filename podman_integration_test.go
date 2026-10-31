@@ -66,18 +66,29 @@ func TestPodmanIntegration(t *testing.T) {
 			deniedAddress := netip.AddrPortFrom(test.target, netip.MustParseAddrPort(other.Listener.Addr().String()).Port())
 			directory := t.TempDir()
 			root := filepath.Join(directory, "run")
-			config := Config{Project: filepath.Join(directory, "project"), Home: filepath.Join(directory, "home"), WorkingDirectory: "/workspace", Tools: Tools{Podman: "/usr/bin/podman", NFT: "/usr/bin/nft", IP: "/usr/bin/ip"}, Environment: sandboxEnvironment(func(string) (string, bool) { return "", false })}
-			for _, path := range []string{config.Project, config.Home, root} {
+			config := Config{Project: filepath.Join(directory, "project"), Home: filepath.Join(directory, "home"), WorkingDirectory: filepath.Join(directory, "project", "nested"), Tools: Tools{Podman: "/usr/bin/podman", NFT: "/usr/bin/nft", IP: "/usr/bin/ip", Node: "/usr/bin/node", NPM: "/usr/bin/npm"}, Environment: map[string]string{}}
+			for _, path := range []string{filepath.Join(config.Project, ".git"), config.WorkingDirectory, filepath.Join(config.Home, ".qwen"), filepath.Join(config.cacheDir(), "npm"), config.stateDir(), root} {
 				if err := os.MkdirAll(path, 0o700); err != nil {
 					t.Fatal(err)
 				}
 			}
+			config.Environment = sandboxEnvironment(config.Home, func(string) (string, bool) { return "", false })
+			for _, name := range []string{".qwen/settings.json", ".qwen/.env", ".qwen/oauth_creds.json", ".qwen/manual-session", "host-secret", ".cache/manual-cache"} {
+				if err := os.WriteFile(filepath.Join(config.Home, name), []byte("host data"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := prepareQwenState(config.Home, config.stateDir()); err != nil {
+				t.Fatal(err)
+			}
 			config.Environment["POMPON_PODMAN_PROBE"] = "1"
+			config.Environment["POMPON_TEST_PROJECT"] = config.Project
+			config.Environment["POMPON_TEST_CWD"] = config.WorkingDirectory
 			config.Environment["POMPON_TEST_MODEL"] = net.JoinHostPort("model.test", fmt.Sprint(modelAddress.Port()))
 			config.Environment["POMPON_TEST_DENIED"] = deniedAddress.String()
 			config.Environment["POMPON_TEST_CANARY"] = filepath.Join(root, "host-canary")
 			endpoint := ModelEndpoint{Hostname: "model.test", Addresses: []netip.AddrPort{modelAddress}}
-			if err := writeRunFiles(root, ModeIsolationCheck, endpoint); err != nil {
+			if err := writeRunFiles(root, config.Home, ModeIsolationCheck, endpoint); err != nil {
 				t.Fatal(err)
 			}
 			plan, err := buildSandbox(config, Args{Mode: ModeIsolationCheck}, root)
@@ -94,11 +105,25 @@ func TestPodmanIntegration(t *testing.T) {
 					}
 				}
 			}
-			policy := newNetworkPolicy(HostNetwork{Addresses: []netip.Addr{test.target}}, nil, endpoint.Addresses)
+			policy := newNetworkPolicy(HostNetwork{Addresses: []netip.Addr{test.target}}, endpoint.Addresses)
 			ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 			defer cancel()
 			if err := supervise(ctx, config.Tools, plan, policy); err != nil {
 				t.Fatal(err)
+			}
+			if data, err := os.ReadFile(filepath.Join(config.stateDir(), "oauth_creds.json")); err != nil || string(data) != "refreshed" {
+				t.Fatalf("private credential refresh did not persist: %q, %v", data, err)
+			}
+			if data, err := os.ReadFile(filepath.Join(config.Home, ".qwen/oauth_creds.json")); err != nil || string(data) != "host data" {
+				t.Fatalf("host credentials changed: %q, %v", data, err)
+			}
+			if _, err := os.Stat(filepath.Join(config.stateDir(), "tmp/session-probe")); err != nil {
+				t.Fatalf("private session data did not persist: %v", err)
+			}
+			for _, name := range []string{"npm/shared-cache-probe", "go-build/shared-cache-probe"} {
+				if data, err := os.ReadFile(filepath.Join(config.cacheDir(), name)); err != nil || string(data) != "cached" {
+					t.Fatalf("cache writes did not persist on host: %q, %v", data, err)
+				}
 			}
 			if err := exec.CommandContext(ctx, config.Tools.Podman, "--remote=false", "container", "exists", string(plan.Name)).Run(); err == nil {
 				t.Fatal("sandbox container was left running")
@@ -130,8 +155,69 @@ func TestPodmanProbe(t *testing.T) {
 	if filesystem.Flags&unix.ST_RDONLY == 0 {
 		t.Fatal("host /usr is writable")
 	}
-	for _, directory := range []string{"/workspace", os.Getenv("HOME")} {
+	if err := unix.Statfs(filepath.Join(os.Getenv("POMPON_TEST_PROJECT"), ".git"), &filesystem); err != nil {
+		t.Fatal(err)
+	}
+	if filesystem.Flags&unix.ST_RDONLY == 0 {
+		t.Fatal("repository metadata is writable")
+	}
+	if err := os.WriteFile(filepath.Join(os.Getenv("POMPON_TEST_PROJECT"), ".git", "sandbox-write-probe"), []byte("probe"), 0o600); !errors.Is(err, unix.EROFS) {
+		t.Fatalf("writing repository metadata must fail with EROFS: %v", err)
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cwd != os.Getenv("POMPON_TEST_CWD") {
+		t.Fatalf("sandbox working directory %q differs from host %q", cwd, os.Getenv("POMPON_TEST_CWD"))
+	}
+	for _, directory := range []string{cwd, filepath.Join(os.Getenv("HOME"), ".cache"), filepath.Join(os.Getenv("HOME"), ".qwen")} {
 		if err := verifyWritableDirectory(directory); err != nil {
+			t.Fatal(err)
+		}
+	}
+	settings := filepath.Join(os.Getenv("HOME"), ".qwen", "settings.json")
+	if data, err := os.ReadFile(settings); err != nil || string(data) != "host data" {
+		t.Fatalf("host Qwen settings are not shared: %q, %v", data, err)
+	}
+	if err := os.WriteFile(settings, []byte("changed"), 0o600); !errors.Is(err, unix.EROFS) {
+		t.Fatalf("Qwen settings must be read-only: %v", err)
+	}
+	qwen := filepath.Join(os.Getenv("HOME"), ".qwen")
+	if err := os.WriteFile(filepath.Join(qwen, ".env"), []byte("changed"), 0o600); !errors.Is(err, unix.EROFS) {
+		t.Fatalf("Qwen environment must be read-only: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(qwen, "manual-session")); !os.IsNotExist(err) {
+		t.Fatalf("manual Qwen session exposed: %v", err)
+	}
+	credential := filepath.Join(qwen, "oauth_creds.json")
+	if data, err := os.ReadFile(credential); err != nil || string(data) != "host data" {
+		t.Fatalf("credentials were not seeded: %q, %v", data, err)
+	}
+	// Token refreshes commonly replace a file by rename rather than truncating it.
+	if err := os.WriteFile(credential+".tmp", []byte("refreshed"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(credential+".tmp", credential); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(qwen, "tmp"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(qwen, "tmp/session-probe"), []byte("session"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(os.Getenv("HOME"), "host-secret")); !os.IsNotExist(err) {
+		t.Fatalf("unrelated host home file exposed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(os.Getenv("HOME"), ".cache", "manual-cache")); !os.IsNotExist(err) {
+		t.Fatalf("manual host cache exposed: %v", err)
+	}
+	for _, cache := range []string{os.Getenv("NPM_CONFIG_CACHE"), filepath.Join(os.Getenv("HOME"), ".cache/go-build")} {
+		if err := os.MkdirAll(cache, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(cache, "shared-cache-probe"), []byte("cached"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}

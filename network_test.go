@@ -79,13 +79,13 @@ func TestPolicyCoversHostAndRoutes(t *testing.T) {
 	policy := newNetworkPolicy(HostNetwork{
 		LinkRoutes: []netip.Prefix{netip.MustParsePrefix("11.2.0.0/16"), netip.MustParsePrefix("2001:4860:abcd::/64")},
 		Addresses:  []netip.Addr{netip.MustParseAddr("9.8.7.6"), netip.MustParseAddr("2001:4860::8888")},
-	}, []netip.Prefix{netip.MustParsePrefix("12.0.0.0/8"), netip.MustParsePrefix("2606:4700:1234::/64")}, server.Addresses)
-	for _, value := range []string{"10.0.0.1", "127.0.0.1", "192.168.1.1", "100.64.0.1", "169.254.169.254", "198.18.0.1", "224.0.0.1", "11.2.3.4", "9.8.7.6", "12.3.4.5", "::", "::1", "fc00::1", "fe80::1", "ff02::1", "2001:db8::1", "2001:4860:abcd::1", "2001:4860::8888", "2606:4700:1234::1", "64:ff9b::a00:1", "64:ff9b::908:706"} {
+	}, server.Addresses)
+	for _, value := range []string{"10.0.0.1", "127.0.0.1", "192.168.1.1", "100.64.0.1", "169.254.169.254", "198.18.0.1", "224.0.0.1", "11.2.3.4", "9.8.7.6", "::", "::1", "fc00::1", "fe80::1", "ff02::1", "2001:db8::1", "2001:4860:abcd::1", "2001:4860::8888", "64:ff9b::a00:1", "64:ff9b::908:706"} {
 		if !policyBlocks(policy, netip.MustParseAddr(value)) {
 			t.Errorf("policy does not block %s", value)
 		}
 	}
-	for _, address := range []string{"1.1.1.1", "2606:4700:4700::1111", "64:ff9b::101:101", "2001:4860::8889"} {
+	for _, address := range []string{"1.1.1.1", "2606:4700:4700::1111", "64:ff9b::101:101", "2001:4860::8889", "12.3.4.5", "2606:4700:1234::1"} {
 		if policyBlocks(policy, netip.MustParseAddr(address)) {
 			t.Fatalf("public internet blocked: %s", address)
 		}
@@ -111,7 +111,7 @@ func TestIPv6ModelException(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rules := newNetworkPolicy(HostNetwork{}, nil, server.Addresses).NFTables()
+	rules := newNetworkPolicy(HostNetwork{}, server.Addresses).NFTables()
 	exception := strings.Index(rules, "ip6 daddr fd12:3456::50 tcp dport 11434 accept")
 	if exception < 0 || exception > strings.Index(rules, "ip6 daddr @blocked6") {
 		t.Fatal("exact IPv6 model exception must precede destination blocks")
@@ -210,7 +210,7 @@ func TestModelEndpointDNS(t *testing.T) {
 		if endpoint.Hostname != "model.test" || !slices.Equal(endpoint.Addresses, want) {
 			return fmt.Errorf("resolved endpoint %+v, want %v", endpoint, want)
 		}
-		rules := newNetworkPolicy(HostNetwork{}, nil, endpoint.Addresses).NFTables()
+		rules := newNetworkPolicy(HostNetwork{}, endpoint.Addresses).NFTables()
 		for _, rule := range []string{"ip daddr 192.168.1.50 tcp dport 443 accept", "ip daddr 192.168.1.60 tcp dport 443 accept", "ip6 daddr fd12::50 tcp dport 443 accept"} {
 			if !strings.Contains(rules, rule) {
 				return fmt.Errorf("missing resolved address rule %s", rule)

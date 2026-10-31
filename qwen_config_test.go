@@ -21,6 +21,80 @@ const localModelSettings = `{
   "env": {"OLLAMA_API_KEY": "ollama"}
 }`
 
+func TestPrivateQwenCredentials(t *testing.T) {
+	home, state := t.TempDir(), t.TempDir()
+	if err := os.Mkdir(filepath.Join(home, ".qwen"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"oauth_creds.json", "mcp-oauth-tokens.json"} {
+		if err := os.WriteFile(filepath.Join(home, ".qwen", name), []byte("host token"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := prepareQwenState(home, state); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"oauth_creds.json", "mcp-oauth-tokens.json"} {
+		path := filepath.Join(state, name)
+		if data, err := os.ReadFile(path); err != nil || string(data) != "host token" {
+			t.Fatalf("private credentials not seeded: %q, %v", data, err)
+		}
+		if info, err := os.Stat(path); err != nil || info.Mode().Perm() != 0o600 {
+			t.Fatalf("credential permissions: %v, %v", info, err)
+		}
+		if err := os.WriteFile(path, []byte("refreshed"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := prepareQwenState(home, state); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"oauth_creds.json", "mcp-oauth-tokens.json"} {
+		if data, err := os.ReadFile(filepath.Join(state, name)); err != nil || string(data) != "refreshed" {
+			t.Fatalf("refreshed credentials overwritten: %q, %v", data, err)
+		}
+		if data, err := os.ReadFile(filepath.Join(home, ".qwen", name)); err != nil || string(data) != "host token" {
+			t.Fatalf("host credentials changed: %q, %v", data, err)
+		}
+	}
+}
+
+func TestPrivateQwenCredentialsDoNotFollowDestinationSymlinks(t *testing.T) {
+	home, state, outside := t.TempDir(), t.TempDir(), t.TempDir()
+	if err := os.Mkdir(filepath.Join(home, ".qwen"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".qwen/oauth_creds.json"), []byte("host token"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(outside, "token")
+	if err := os.WriteFile(target, []byte("untouched"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(state, "oauth_creds.json")); err != nil {
+		t.Fatal(err)
+	}
+	if err := prepareQwenState(home, state); err != nil {
+		t.Fatal(err)
+	}
+	if data, err := os.ReadFile(target); err != nil || string(data) != "untouched" {
+		t.Fatalf("credential seeding followed a destination symlink: %q, %v", data, err)
+	}
+}
+
+func TestPrivateQwenStateWithoutHostConfiguration(t *testing.T) {
+	home, state := t.TempDir(), t.TempDir()
+	if err := prepareQwenState(home, state); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyWritableDirectory(state); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".qwen")); !os.IsNotExist(err) {
+		t.Fatalf("created host configuration directory: %v", err)
+	}
+}
+
 func TestConfiguredModelServer(t *testing.T) {
 	home := t.TempDir()
 	if err := os.Mkdir(filepath.Join(home, ".qwen"), 0o700); err != nil {
@@ -37,7 +111,7 @@ func TestConfiguredModelServer(t *testing.T) {
 	if err != nil || len(server.Addresses) != 1 || server.Addresses[0].String() != "192.168.1.50:11434" {
 		t.Fatalf("configured endpoint: %v, %v", server, err)
 	}
-	policy := newNetworkPolicy(HostNetwork{}, nil, server.Addresses)
+	policy := newNetworkPolicy(HostNetwork{}, server.Addresses)
 	if rules := policy.NFTables(); !strings.Contains(rules, "ip daddr 192.168.1.50 tcp dport 11434 accept") || strings.Contains(rules, "ip daddr 192.168.1.60 tcp dport 8000 accept") {
 		t.Fatal("policy must allow only the selected endpoint")
 	}
@@ -101,7 +175,11 @@ func TestQwenEndpointSelection(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			got, err := settings.modelEndpoint(test.env, Args{Mode: ModeQwen, Arguments: test.args})
+			invocation, err := parseArgs(test.args)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := settings.modelEndpoint(test.env, invocation)
 			if (err != nil) != test.wantError || got != test.want {
 				t.Fatalf("endpoint=%q, error=%v; want %q, error=%v", got, err, test.want, test.wantError)
 			}
@@ -124,13 +202,18 @@ func TestEndpointVariableExpansion(t *testing.T) {
 	}
 }
 
-func TestEndpointOverridesSkipPromptValues(t *testing.T) {
-	got, err := endpointOverrides([]string{"--prompt", "--model", "--model=other", "--", "--model=ignored"})
+func TestEndpointResolutionIgnoresQwenArguments(t *testing.T) {
+	var settings qwenSettings
+	if err := json.Unmarshal([]byte(localModelSettings), &settings); err != nil {
+		t.Fatal(err)
+	}
+	invocation, err := parseArgs([]string{"--", "--model=other", "--auth-type=anthropic", "--prompt", "--openai-base-url", "--model"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Model != "other" {
-		t.Fatalf("unexpected model override %q", got.Model)
+	endpoint, err := settings.modelEndpoint(map[string]string{}, invocation)
+	if err != nil || endpoint != "http://192.168.1.50:11434/v1" {
+		t.Fatalf("Qwen arguments changed endpoint: %q, %v", endpoint, err)
 	}
 }
 

@@ -1,6 +1,6 @@
-/qwen-isolated
+/qwen-box
 /bin/
 /packaging/aur/src/
 /packaging/aur/pkg/
-/packaging/aur/qwen-isolated/
+/packaging/aur/qwen-box/
 /packaging/aur/*.pkg.tar.*

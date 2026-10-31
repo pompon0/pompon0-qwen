@@ -10,6 +10,7 @@ import (
 	"net/netip"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -18,7 +19,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-const sandboxCheckerPath = "/opt/qwen-isolated-check"
+const sandboxCheckerPath = "/opt/qwen-box-check"
 
 type capabilityKind string
 type capabilityMask uint64
@@ -51,12 +52,20 @@ func runIsolationChecks(ctx context.Context, version QwenVersion, canary string,
 	if err := verifyNoUserNamespaces(ctx); err != nil {
 		return err
 	}
-	for _, path := range []string{"/workspace", os.Getenv("HOME")} {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("Getwd(): %w", err)
+	}
+	for _, path := range []string{cwd, filepath.Join(os.Getenv("HOME"), ".cache"), filepath.Join(os.Getenv("HOME"), ".qwen")} {
 		if err := verifyWritableDirectory(path); err != nil {
 			return err
 		}
 	}
-	for _, command := range [][]string{{"/usr/bin/node", "--version"}, qwenCommand(version, []string{"--version"})} {
+	tools, err := discoverTools()
+	if err != nil {
+		return err
+	}
+	for _, command := range [][]string{{tools.Node, "--version"}, tools.qwenCommand(version, []string{"--version"})} {
 		cmd := exec.CommandContext(ctx, command[0], command[1:]...)
 		cmd.Stdout, cmd.Stderr = output, output
 		if err := cmd.Run(); err != nil {
@@ -67,7 +76,7 @@ func runIsolationChecks(ctx context.Context, version QwenVersion, canary string,
 		return err
 	}
 	fmt.Fprintln(output, "PASS: denied destination rejected; public TCP works.")
-	fmt.Fprintln(output, "PASS: host canary hidden; /usr read-only; writable project/home; no capabilities or further user namespaces.")
+	fmt.Fprintln(output, "PASS: host canary hidden; /usr read-only; writable project/cache/private Qwen state; no capabilities or further user namespaces.")
 	return nil
 }
 

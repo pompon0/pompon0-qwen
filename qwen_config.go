@@ -3,8 +3,11 @@ package main
 import (
 	"cmp"
 	"context"
+	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"os"
 	"path/filepath"
@@ -40,14 +43,92 @@ type modelOverrides struct {
 	Model, AuthType, BaseURL string
 }
 
-// Read the documented per-repository user configuration, never the host's
-// ordinary ~/.qwen or project-supplied settings. No Qwen/project code executes
+// These host-owned inputs are mounted read-only over writable launcher-owned
+// Qwen state. Other host .qwen contents, including manual sessions, are not shared.
+var qwenSharedConfiguration = [...]string{
+	"settings.json", ".env", "QWEN.md", "commands", "skills", "rules",
+}
+
+// prepareQwenState initializes the state directory derived from Config.Home,
+// shared across launcher executions and
+// repositories, separately from the host's normal .qwen. It seeds credentials
+// only when absent, preserving tokens refreshed by earlier launcher sessions.
+// Root-relative operations keep sandbox-created symlinks from redirecting
+// supervisor writes outside launcher state. Missing host configuration is valid;
+// the host .qwen directory and credential files must not be symlinks.
+func prepareQwenState(home, state string) error {
+	private, err := os.OpenRoot(state)
+	if err != nil {
+		return fmt.Errorf("OpenRoot(Qwen state): %w", err)
+	}
+	defer private.Close()
+	host, err := os.OpenRoot(home)
+	if err != nil {
+		return fmt.Errorf("OpenRoot(host home): %w", err)
+	}
+	defer host.Close()
+	info, err := host.Lstat(".qwen")
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("Lstat(host .qwen): %w", err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("host .qwen must be a directory, not a symlink")
+	}
+	for _, name := range []string{"oauth_creds.json", "mcp-oauth-tokens.json"} {
+		if err := seedQwenCredential(host, private, name); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func seedQwenCredential(host, private *os.Root, name string) error {
+	path := filepath.Join(".qwen", name)
+	info, err := host.Lstat(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("Lstat(%s): %w", path, err)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("host Qwen credential %s must be a regular file", path)
+	}
+	source, err := host.Open(path)
+	if err != nil {
+		return fmt.Errorf("Open(%s): %w", path, err)
+	}
+	defer source.Close()
+	// Publish a complete file without replacing an existing credential. Parallel
+	// launcher starts must not see a partially copied token or undo a refresh.
+	temporary := ".seed-" + rand.Text()
+	destination, err := private.OpenFile(temporary, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return fmt.Errorf("create private credential %s: %w", name, err)
+	}
+	defer private.Remove(temporary)
+	_, copyErr := io.Copy(destination, source)
+	closeErr := destination.Close()
+	if err := errors.Join(copyErr, closeErr); err != nil {
+		return fmt.Errorf("copy Qwen credential %s: %w", name, err)
+	}
+	if err := private.Link(temporary, name); err != nil && !os.IsExist(err) {
+		return fmt.Errorf("publish Qwen credential %s: %w", name, err)
+	}
+	return nil
+}
+
+// Read the host's ~/.qwen user configuration shared read-only with the sandbox,
+// never project-supplied settings. No Qwen/project code executes
 // while the supervisor still has authority over the firewall.
 func configuredModelEndpoint(ctx context.Context, home string, environment map[string]string, invocation Args) (ModelEndpoint, error) {
 	path := filepath.Join(home, ".qwen/settings.json")
 	var settings qwenSettings
-	// Qwen can write its own home. Do not let a symlink there make the trusted
-	// supervisor read host files that are unavailable inside the sandbox.
+	// Bound host settings reads to the host home. A symlink must not make the
+	// supervisor read files outside that root that are unavailable in the sandbox.
 	root, err := os.OpenRoot(home)
 	if err != nil {
 		return ModelEndpoint{}, fmt.Errorf("open Qwen home: %w", err)
@@ -72,7 +153,7 @@ func configuredModelEndpoint(ctx context.Context, home string, environment map[s
 	}
 	server, err := modelEndpointFromURL(ctx, endpoint)
 	if err != nil {
-		return ModelEndpoint{}, fmt.Errorf("Qwen model endpoint: %w (edit the sandbox user settings on the host)", err)
+		return ModelEndpoint{}, fmt.Errorf("Qwen model endpoint: %w (edit ~/.qwen/settings.json on the host)", err)
 	}
 	return server, nil
 }
@@ -84,14 +165,8 @@ func (settings qwenSettings) modelEndpoint(environment map[string]string, invoca
 	env := make(map[string]string, len(settings.Env)+len(environment))
 	maps.Copy(env, settings.Env)
 	maps.Copy(env, environment)
-	var overrides modelOverrides
-	if invocation.Mode == ModeQwen {
-		var err error
-		overrides, err = endpointOverrides(invocation.Arguments)
-		if err != nil {
-			return "", fmt.Errorf("endpointOverrides(): %w", err)
-		}
-	}
+	overrides := invocation.Overrides
+
 	expand := func(value string) string { return expandEndpointVariables(value, env) }
 	authType := cmp.Or(overrides.AuthType, expand(settings.Security.Auth.SelectedType))
 	if authType == "" && env["OPENAI_API_KEY"] != "" && env["OPENAI_BASE_URL"] != "" && env["OPENAI_MODEL"] != "" {

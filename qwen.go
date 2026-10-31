@@ -28,10 +28,11 @@ func (v QwenVersion) String() string {
 
 func (QwenVersion) Type() string { return "version" }
 
-func qwenCommand(version QwenVersion, arguments []string) []string {
+func (t Tools) qwenCommand(version QwenVersion, arguments []string) []string {
 	// Keep package discovery outside the project without changing Qwen's working
-	// directory. npm installs missing packages in the sandbox home's npm cache.
-	return append([]string{"/usr/bin/npm", "exec", "--yes", "--prefer-online",
-		"--prefix=/home/qwen",
+	// directory. npm installs missing packages in the launcher-only shared cache
+	// selected by NPM_CONFIG_CACHE, not the host's ordinary npm cache.
+	return append([]string{t.NPM, "exec", "--yes", "--prefer-online",
+		"--prefix=/opt/qwen-box-npm",
 		"--package=@qwen-code/qwen-code@" + version.String(), "--", "qwen"}, arguments...)
 }

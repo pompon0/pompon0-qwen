@@ -22,6 +22,9 @@ type SandboxPlan struct {
 	Workload     []string
 }
 
+// runSandbox resolves the allowed endpoint and host network before starting any
+// workload. The launcher owns its /tmp run directory and removes it after
+// supervision ends; shared Qwen state and caches survive the run.
 func runSandbox(ctx context.Context, invocation Args) error {
 	config, err := discoverConfig()
 	if err != nil {
@@ -35,13 +38,16 @@ func runSandbox(ctx context.Context, invocation Args) error {
 	if err != nil {
 		return err
 	}
-	policy := newNetworkPolicy(network, config.ExtraDenied, modelEndpoint.Addresses)
-	runDir, err := os.MkdirTemp(config.State, "run-")
+	policy := newNetworkPolicy(network, modelEndpoint.Addresses)
+	runDir, err := os.MkdirTemp("/tmp", "qwen-box-run-")
 	if err != nil {
 		return fmt.Errorf("MkdirTemp(): %w", err)
 	}
 	defer os.RemoveAll(runDir)
-	if err := writeRunFiles(runDir, invocation.Mode, modelEndpoint); err != nil {
+	if err := prepareQwenState(config.Home, config.stateDir()); err != nil {
+		return err
+	}
+	if err := writeRunFiles(runDir, config.Home, invocation.Mode, modelEndpoint); err != nil {
 		return err
 	}
 	plan, err := buildSandbox(config, invocation, runDir)
@@ -52,7 +58,7 @@ func runSandbox(ctx context.Context, invocation Args) error {
 }
 
 func buildSandbox(config Config, invocation Args, runDir string) (SandboxPlan, error) {
-	name := containerName("qwen-isolated-" + strings.ToLower(rand.Text()))
+	name := containerName("qwen-box-" + strings.ToLower(rand.Text()))
 	args := []string{
 		"run", "--detach", "--rm", "--name", string(name), "--rootfs", "--read-only",
 		"--cap-drop=all", "--security-opt=no-new-privileges", "--security-opt=label=disable",
@@ -66,12 +72,32 @@ func buildSandbox(config Config, invocation Args, runDir string) (SandboxPlan, e
 		"--tmpfs=/tmp:rw,nosuid,nodev", "--tmpfs=/run:rw,nosuid,nodev",
 		"--workdir", config.WorkingDirectory,
 	}
-	mounts := []struct {
+	type mountSpec struct {
 		source, target string
 		writable       bool
-	}{
+	}
+	mounts := []mountSpec{
 		{"/usr", "/usr", false},
-		{config.Project, "/workspace", true}, {config.Home, "/home/qwen", true},
+		{config.Project, config.Project, true},
+		// Give every tool a shared launcher-only cache at the conventional path.
+		{config.cacheDir(), filepath.Join(config.Home, ".cache"), true},
+		{config.stateDir(), filepath.Join(config.Home, ".qwen"), true},
+		// Protect repository metadata within the otherwise writable project.
+		// A bind mount also supports the .git file used by worktrees/submodules.
+		{filepath.Join(config.Project, ".git"), filepath.Join(config.Project, ".git"), false},
+	}
+	// Protect host configuration while leaving Qwen's sessions, logs, and
+	// refreshed credential copies writable in shared launcher-owned state.
+	for _, name := range qwenSharedConfiguration {
+		path := filepath.Join(config.Home, ".qwen", name)
+		if info, err := os.Lstat(path); err == nil {
+			if !info.Mode().IsRegular() && !info.IsDir() {
+				return SandboxPlan{}, fmt.Errorf("Qwen configuration %s must be a regular file or directory", path)
+			}
+			mounts = append(mounts, mountSpec{path, path, false})
+		} else if !os.IsNotExist(err) {
+			return SandboxPlan{}, fmt.Errorf("Lstat(Qwen configuration): %w", err)
+		}
 	}
 	for _, mount := range mounts {
 		args = append(args, "--mount", bindMount(mount.source, mount.target, mount.writable))
@@ -89,7 +115,7 @@ func buildSandbox(config Config, invocation Args, runDir string) (SandboxPlan, e
 	var workload []string
 	switch invocation.Mode {
 	case ModeQwen:
-		workload = qwenCommand(invocation.Version, invocation.Arguments)
+		workload = config.Tools.qwenCommand(invocation.Version, invocation.Arguments)
 	case ModeIsolationCheck:
 		// The diagnostic binary is exposed only for the explicit isolation check.
 		launcher, err := os.Executable()
@@ -124,11 +150,16 @@ func bindMount(source, target string, writable bool) string {
 	return strings.TrimSuffix(output.String(), "\n")
 }
 
-func writeRunFiles(runDir string, mode Mode, endpoint ModelEndpoint) error {
+// writeRunFiles assembles the externally managed rootfs passed to Podman; it
+// does not build or extract a container image. It creates mount-point directories,
+// /usr symlinks, and generated hosts/DNS/hostname/passwd/group files. Podman
+// overlays separate writable tmpfs mounts on /tmp and /run, so their contents do
+// not live in this skeleton. The diagnostic host-canary stays outside rootfs.
+func writeRunFiles(runDir, home string, mode Mode, endpoint ModelEndpoint) error {
 	root := filepath.Join(runDir, "rootfs")
 	// This is a mount skeleton, not an OS image. Executables and libraries come
-	// from read-only host mounts; only the project and Qwen home persist writes.
-	for _, directory := range []string{"usr", "etc", "dev", "proc", "sys", "tmp", "run", "workspace", "home/qwen"} {
+	// from read-only host mounts; project, cache, and shared Qwen state persist writes.
+	for _, directory := range []string{"usr", "etc", "dev", "proc", "sys", "tmp", "run", "opt/qwen-box-npm", filepath.Join(home, ".qwen")} {
 		if err := os.MkdirAll(filepath.Join(root, directory), 0o700); err != nil {
 			return fmt.Errorf("MkdirAll(%s): %w", directory, err)
 		}
@@ -142,8 +173,13 @@ func writeRunFiles(runDir string, mode Mode, endpoint ModelEndpoint) error {
 	for _, address := range endpoint.Addresses {
 		hosts += fmt.Sprintf("%s %s\n", address.Addr(), endpoint.Hostname)
 	}
-	files := map[string]string{"etc/resolv.conf": "nameserver 1.1.1.1\nnameserver 2606:4700:4700::1111\n", "etc/hosts": hosts,
-		"etc/passwd": "qwen:x:0:0:Qwen:/home/qwen:/usr/bin/bash\n", "etc/group": "qwen:x:0:\n", "etc/hostname": "qwen-isolated\n"}
+	files := map[string]string{
+		"etc/resolv.conf": "nameserver 1.1.1.1\nnameserver 2606:4700:4700::1111\n",
+		"etc/hosts":       hosts,
+		"etc/passwd":      fmt.Sprintf("qwen:x:0:0:Qwen:%s:/usr/bin/bash\n", home),
+		"etc/group":       "qwen:x:0:\n",
+		"etc/hostname":    "qwen-box\n",
+	}
 	for name, contents := range files {
 		if err := os.WriteFile(filepath.Join(root, name), []byte(contents), 0o600); err != nil {
 			return fmt.Errorf("WriteFile(%s): %w", name, err)

@@ -10,7 +10,13 @@ import (
 )
 
 func TestPodmanPlan(t *testing.T) {
-	config := Config{Project: "/host/project, with spaces", Home: "/host/home", WorkingDirectory: "/workspace/sub", Environment: map[string]string{"HOME": "/home/qwen", "PATH": "/usr/bin"}}
+	config := Config{Project: "/host/project, with spaces", Home: t.TempDir(), WorkingDirectory: "/host/project, with spaces/sub", Tools: Tools{NPM: "/tools/npm"}, Environment: map[string]string{"HOME": "/host/home", "PATH": "/usr/bin"}}
+	if err := os.Mkdir(filepath.Join(config.Home, ".qwen"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(config.Home, ".qwen", "settings.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	for _, mode := range []Mode{ModeQwen, ModeIsolationCheck} {
 		plan, err := buildSandbox(config, Args{Mode: mode, Version: "0.26.1", Arguments: []string{"--model", "local"}}, "/run-dir")
 		if err != nil {
@@ -29,6 +35,9 @@ func TestPodmanPlan(t *testing.T) {
 		if !containsSequence(plan.RunArguments, []string{"--", "/run-dir/rootfs", "/usr/bin/sleep", "infinity"}) {
 			t.Fatal("container must start only trusted sleep")
 		}
+		if !containsSequence(plan.RunArguments, []string{"--workdir", config.WorkingDirectory}) {
+			t.Fatal("sandbox working directory must retain its host path")
+		}
 		mounts := map[string][]string{}
 		for i, arg := range plan.RunArguments {
 			if arg != "--mount" {
@@ -44,15 +53,32 @@ func TestPodmanPlan(t *testing.T) {
 				}
 			}
 		}
-		if !slices.Contains(mounts["/workspace"], "src="+config.Project) || slices.Contains(mounts["/workspace"], "ro=true") {
+		if !slices.Contains(mounts[config.Project], "src="+config.Project) || slices.Contains(mounts[config.Project], "ro=true") {
 			t.Fatal("project must remain writable with intact path")
 		}
-		for _, target := range []string{"/usr"} {
+		if !slices.Contains(mounts[filepath.Join(config.Project, ".git")], "src="+filepath.Join(config.Project, ".git")) {
+			t.Fatal("repository metadata must be mounted from the project")
+		}
+		for _, target := range []string{"/usr", filepath.Join(config.Project, ".git"), filepath.Join(config.Home, ".qwen/settings.json")} {
 			if !slices.Contains(mounts[target], "ro=true") {
 				t.Errorf("%s must be read-only", target)
 			}
 		}
+		if _, mounted := mounts[config.Home]; mounted {
+			t.Fatal("host home must not be mounted")
+		}
+		qwenMount := mounts[filepath.Join(config.Home, ".qwen")]
+		if !slices.Contains(qwenMount, "src="+filepath.Join(config.Home, ".local/state/qwen-box")) || slices.Contains(qwenMount, "ro=true") {
+			t.Fatal("Qwen runtime state must use a private writable directory")
+		}
+		cacheMount := mounts[filepath.Join(config.Home, ".cache")]
+		if !slices.Contains(cacheMount, "src="+filepath.Join(config.Home, ".cache/qwen-box")) || slices.Contains(cacheMount, "ro=true") {
+			t.Fatal("the full cache directory must use the writable launcher cache")
+		}
 		if mode == ModeQwen {
+			if plan.Workload[0] != config.Tools.NPM {
+				t.Fatal("Qwen must use the configured npm executable")
+			}
 			if !containsSequence(plan.Workload, []string{"--package=@qwen-code/qwen-code@0.26.1", "--", "qwen", "--model", "local"}) {
 				t.Fatal(plan.Workload)
 			}
@@ -72,7 +98,7 @@ func TestPodmanPlan(t *testing.T) {
 
 func TestMinimalRootfs(t *testing.T) {
 	directory := t.TempDir()
-	if err := writeRunFiles(directory, ModeQwen, ModelEndpoint{}); err != nil {
+	if err := writeRunFiles(directory, "/host/home", ModeQwen, ModelEndpoint{}); err != nil {
 		t.Fatal(err)
 	}
 	root := filepath.Join(directory, "rootfs")
@@ -93,7 +119,7 @@ func TestMinimalRootfs(t *testing.T) {
 
 func TestIsolationCheckCreatesHostCanary(t *testing.T) {
 	directory := t.TempDir()
-	if err := writeRunFiles(directory, ModeIsolationCheck, ModelEndpoint{}); err != nil {
+	if err := writeRunFiles(directory, "/host/home", ModeIsolationCheck, ModelEndpoint{}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(directory, "host-canary")); err != nil {

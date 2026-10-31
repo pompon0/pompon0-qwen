@@ -13,7 +13,7 @@ type NetworkPolicy struct {
 	ModelServers []netip.AddrPort
 }
 
-func newNetworkPolicy(host HostNetwork, extra []netip.Prefix, servers []netip.AddrPort) NetworkPolicy {
+func newNetworkPolicy(host HostNetwork, servers []netip.AddrPort) NetworkPolicy {
 	var blocked []netip.Prefix
 	for value := range strings.FieldsSeq(`0.0.0.0/8 10.0.0.0/8 100.64.0.0/10 127.0.0.0/8
 		169.254.0.0/16 172.16.0.0/12 192.0.0.0/24 192.0.2.0/24
@@ -24,7 +24,6 @@ func newNetworkPolicy(host HostNetwork, extra []netip.Prefix, servers []netip.Ad
 		fc00::/7 fe80::/10 fec0::/10 ff00::/8`) {
 		blocked = append(blocked, netip.MustParsePrefix(value))
 	}
-	blocked = append(blocked, extra...)
 	blocked = append(blocked, host.LinkRoutes...)
 	for _, address := range host.Addresses {
 		blocked = append(blocked, netip.PrefixFrom(address, address.BitLen()))

@@ -1,17 +1,37 @@
 # AUR packaging
 
-`PKGBUILD` builds `qwen-isolated-git` from the default branch of
+`PKGBUILD` builds `qwen-box-git` from the default branch of
 `https://github.com/pompon0/pompon0-qwen`. Change `url` if the public repository
 uses a different name. This VCS package needs no release tags: `pkgver()` uses
 the upstream commit count and abbreviated commit ID.
 
-The package installs `/usr/bin/qwen-isolated` and its documentation. Pacman
+The package installs `/usr/bin/qwen-box` and its documentation. Pacman
 manages the launcher and its sandbox dependencies, including Node.js 22 or later
 and npm. Qwen Code is fetched at runtime by npm inside the sandbox, using
 `--qwen-version` (default `latest`) to select a release or dist-tag. npm caches
-installations in the persistent sandbox home. No existing Qwen installation or
-nvm runtime is required. The package does not run npm, initialize Git
+installations in `~/.cache/qwen-box/npm`, shared only across launcher runs.
+The host's `~/.cache/qwen-box` backs the sandbox's entire `~/.cache`, including
+Go build and module caches. No existing Qwen installation or nvm runtime is
+required. The package does not run npm, initialize Git
 repositories, or change user configuration during pacman installation.
+
+Runtime mounting structure:
+
+- Host `~/.local/state/qwen-box/` → sandbox `~/.qwen/`: writable state shared
+  across all launcher runs and repositories, without an extra `qwen/` level.
+- Selected host `~/.qwen` configuration entries → the same sandbox paths:
+  read-only overlays; credential files are seeded into writable launcher copies.
+- Host `~/.cache/qwen-box/` → sandbox `~/.cache/`: writable shared caches.
+- Selected repository → the same absolute path: writable, except its root
+  `.git` is mounted read-only.
+- Host `/usr` → sandbox `/usr`: read-only programs and libraries.
+- `/tmp/qwen-box-run-*/rootfs/` → sandbox `/`: a temporary skeleton passed
+  to Podman with `--rootfs`, without building or downloading an image.
+- Fresh tmpfs mounts → sandbox `/tmp` and `/run`: writable temporary files.
+- Manual Qwen sessions and ordinary host caches are not mounted. Shared state
+  and caches persist; temporary mounts and skeletons are removed after the run.
+
+See the main README for the complete mount layout and cleanup behavior.
 
 ## Before submitting
 
@@ -20,7 +40,7 @@ repositories, or change user configuration during pacman installation.
   `PKGBUILD` with the matching SPDX identifier. The packaging recipe currently
   records the absence of an upstream license rather than assuming permission.
 * Add the maintainer contact address to the `PKGBUILD` header.
-* Check that `qwen-isolated-git` remains available in the AUR and that the
+* Check that `qwen-box-git` remains available in the AUR and that the
   application is not already in Arch's official repositories.
 * Create an AUR account and register an SSH public key.
 
@@ -33,9 +53,9 @@ From the application repository, create a separate AUR checkout:
 
 ```sh
 git -c init.defaultBranch=master clone \
-  ssh://aur@aur.archlinux.org/qwen-isolated-git.git ../qwen-isolated-aur
-cp packaging/aur/PKGBUILD ../qwen-isolated-aur/
-cd ../qwen-isolated-aur
+  ssh://aur@aur.archlinux.org/qwen-box-git.git ../qwen-box-aur
+cp packaging/aur/PKGBUILD ../qwen-box-aur/
+cd ../qwen-box-aur
 makepkg --nobuild --nodeps
 makepkg --printsrcinfo > .SRCINFO
 ```
@@ -63,7 +83,7 @@ Inspect the resulting package with `namcap` and confirm its contents with
 ```sh
 makepkg --printsrcinfo > .SRCINFO
 git add PKGBUILD .SRCINFO
-git commit -m "Package qwen-isolated-git"
+git commit -m "Package qwen-box-git"
 git push origin master
 ```
 
@@ -72,7 +92,7 @@ built package archives. Choose a license for the packaging files too; Arch
 recommends 0BSD for packaging contributions. Include that license in the AUR
 repository separately from the application's license.
 
-After publication, AUR users can install `qwen-isolated-git` with their preferred
+After publication, AUR users can install `qwen-box-git` with their preferred
 AUR tooling. It will not become available through `pacman -S` alone: that command
 uses configured binary repositories, while the AUR distributes build recipes.
 
@@ -84,7 +104,7 @@ When dependencies, build steps, or other packaging details change, update the
 recipe, bump `pkgrel` as appropriate, regenerate `.SRCINFO`, and push the changes.
 Keep the copy in this repository synchronized with the AUR checkout.
 
-For a future tagged release, add a separate `qwen-isolated` package using a
+For a future tagged release, add a separate `qwen-box` package using a
 specific release archive and its SHA-256 checksum. The `-git` package already
 provides and conflicts with that package name.
 

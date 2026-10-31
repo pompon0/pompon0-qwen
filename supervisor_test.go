@@ -45,7 +45,7 @@ esac
 	if err := os.WriteFile(executable, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	return Tools{Podman: executable, NFT: "/usr/bin/nft", IP: "/usr/bin/ip"}, directory
+	return Tools{Podman: executable, NFT: "/usr/bin/nft", IP: "/usr/bin/ip", Node: "/usr/bin/node", NPM: "/usr/bin/npm"}, directory
 }
 
 func testPlan(workload ...string) SandboxPlan {

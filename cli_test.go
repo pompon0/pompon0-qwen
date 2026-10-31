@@ -14,12 +14,16 @@ func TestLauncherParsingPreservesForwardedArguments(t *testing.T) {
 		forwarded []string
 	}{
 		{mode: ModeQwen},
-		{args: []string{"qwen", "--model", "local"}, mode: ModeQwen, forwarded: []string{"--model", "local"}},
-		{args: []string{"--model=local", "--new-qwen-option", "value", "--", "isolation-check"}, mode: ModeQwen, forwarded: []string{"--model=local", "--new-qwen-option", "value", "--", "isolation-check"}},
-		{args: []string{"--prompt", "isolation-check"}, mode: ModeQwen, forwarded: []string{"--prompt", "isolation-check"}},
-		{args: []string{"qwen", "--", "--help", "isolation-check"}, mode: ModeQwen, forwarded: []string{"--", "--help", "isolation-check"}},
-		{args: []string{"--help"}, mode: ModeQwen, forwarded: []string{"--help"}},
-		{args: []string{"-h"}, mode: ModeQwen, forwarded: []string{"-h"}},
+		{args: []string{"qwen"}, mode: ModeQwen},
+		{args: []string{"qwen", "--", "--model", "local"}, mode: ModeQwen, forwarded: []string{"--model", "local"}},
+		{args: []string{"--", "--model=local", "--new-qwen-option", "value", "--", "isolation-check"}, mode: ModeQwen, forwarded: []string{"--model=local", "--new-qwen-option", "value", "--", "isolation-check"}},
+		{args: []string{"--", "--prompt", "isolation-check"}, mode: ModeQwen, forwarded: []string{"--prompt", "isolation-check"}},
+		{args: []string{"qwen", "--", "--", "--help", "isolation-check"}, mode: ModeQwen, forwarded: []string{"--", "--help", "isolation-check"}},
+		{args: []string{"--", "--help"}, mode: ModeQwen, forwarded: []string{"--help"}},
+		{args: []string{"--", "-h"}, mode: ModeQwen, forwarded: []string{"-h"}},
+		{args: []string{"--", "isolation-check"}, mode: ModeQwen, forwarded: []string{"isolation-check"}},
+		{args: []string{"--help"}, mode: ModeHelp},
+		{args: []string{"-h"}, mode: ModeHelp},
 		{args: []string{"isolation-check"}, mode: ModeIsolationCheck},
 	} {
 		original := slices.Clone(test.args)
@@ -41,13 +45,27 @@ func TestRejectInvalidLauncherModes(t *testing.T) {
 	}
 }
 
-func TestModelFlagParsing(t *testing.T) {
-	got, err := endpointOverrides([]string{"-mlocal", "--unknown-qwen-flag=value", "--auth-type", "openai", "--openai-base-url=http://192.168.1.50:11434/v1"})
-	if err != nil || got.Model != "local" || got.AuthType != "openai" || got.BaseURL != "http://192.168.1.50:11434/v1" {
-		t.Fatalf("model options: %v, %v", got, err)
+func TestLauncherEndpointOverrides(t *testing.T) {
+	want := modelOverrides{Model: "local", AuthType: "openai", BaseURL: "http://192.168.1.50:11434/v1"}
+	for _, mode := range [][]string{{}, {"qwen"}, {"isolation-check"}} {
+		arguments := append(slices.Clone(mode), "-mlocal", "--auth-type", "openai", "--openai-base-url="+want.BaseURL)
+		got, err := parseArgs(arguments)
+		if err != nil || got.Overrides != want || len(got.Arguments) != 0 {
+			t.Fatalf("launcher overrides: %+v, %v", got, err)
+		}
 	}
-	if _, err := endpointOverrides([]string{"--model"}); err == nil {
-		t.Fatal("missing model value accepted")
+	got, err := parseArgs([]string{"--model=local", "--", "--model=other", "--auth-type=anthropic", "--openai-base-url=other", "--qwen-version=other"})
+	if err != nil || got.Overrides != (modelOverrides{Model: "local"}) || got.Version != "latest" {
+		t.Fatalf("Qwen arguments affected launcher options: %+v, %v", got, err)
+	}
+	for _, arguments := range [][]string{
+		{"--model"}, {"--auth-type"}, {"--openai-base-url"},
+		{"--unknown-qwen-flag=value"}, {"--prompt", "hello"},
+		{"qwen", "prompt"}, {"isolation-check", "--", "--model=other"},
+	} {
+		if _, err := parseArgs(arguments); err == nil {
+			t.Errorf("accepted invalid launcher arguments %v", arguments)
+		}
 	}
 }
 
@@ -63,17 +81,17 @@ func TestLauncherHelp(t *testing.T) {
 	if strings.Contains(output.String(), "internal-") || strings.Contains(output.String(), string(ModeIsolationProbe)) {
 		t.Fatal("private protocol flags exposed in help")
 	}
-	for _, name := range []string{"qwen", "isolation-check", "help"} {
+	for _, name := range []string{"qwen", "isolation-check", "help", "--model", "--auth-type", "--openai-base-url"} {
 		if !strings.Contains(output.String(), name) {
 			t.Errorf("help is missing %s", name)
 		}
 	}
-	for _, misleading := range []string{"help for qwen-isolated", "[command] --help"} {
+	for _, misleading := range []string{"help for qwen-box", "[command] --help"} {
 		if strings.Contains(output.String(), misleading) {
 			t.Errorf("misleading launcher help: %s", output.String())
 		}
 	}
-	for _, instruction := range []string{"qwen-isolated help", "forwarded to Qwen Code", "help [command]"} {
+	for _, instruction := range []string{"qwen-box help", "forwarded to Qwen Code unchanged", "help [command]"} {
 		if !strings.Contains(output.String(), instruction) {
 			t.Errorf("help is missing %q: %s", instruction, output.String())
 		}
@@ -89,8 +107,8 @@ func TestQwenVersionSelection(t *testing.T) {
 	}{
 		{version: "latest", mode: ModeQwen},
 		{arguments: []string{"--qwen-version", "0.26.1"}, version: "0.26.1", mode: ModeQwen},
-		{arguments: []string{"--qwen-version=nightly", "--model", "local"}, version: "nightly", mode: ModeQwen, forwarded: []string{"--model", "local"}},
-		{arguments: []string{"--qwen-version", "0.26.1", "qwen", "--prompt", "--qwen-version=other"}, version: "0.26.1", mode: ModeQwen, forwarded: []string{"--prompt", "--qwen-version=other"}},
+		{arguments: []string{"--qwen-version=nightly", "--", "--model", "local"}, version: "nightly", mode: ModeQwen, forwarded: []string{"--model", "local"}},
+		{arguments: []string{"--qwen-version", "0.26.1", "qwen", "--", "--prompt", "--qwen-version=other"}, version: "0.26.1", mode: ModeQwen, forwarded: []string{"--prompt", "--qwen-version=other"}},
 		{arguments: []string{"--qwen-version", "0.26.1", "isolation-check"}, version: "0.26.1", mode: ModeIsolationCheck},
 	} {
 		args, err := parseArgs(test.arguments)
