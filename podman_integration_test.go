@@ -90,7 +90,7 @@ func TestPodmanIntegration(t *testing.T) {
 				"POMPON_TEST_DENIED":  deniedAddress.String(),
 				"POMPON_TEST_CANARY":  filepath.Join(root, "host-canary"),
 			}
-			invocation, err := parseArgs([]string{"--localnet=" + modelAddress.String(), "isolation-check"})
+			invocation, err := parseArgs([]string{"--localnet=" + modelAddress.String(), "health-check"})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -98,10 +98,10 @@ func TestPodmanIntegration(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := writeRunFiles(root, config.Home, ModeIsolationCheck); err != nil {
+			if err := writeRunFiles(root, config.Home, ModeHealthCheck); err != nil {
 				t.Fatal(err)
 			}
-			plan, err := buildSandbox(config, Args{Mode: ModeIsolationCheck}, root)
+			plan, err := buildSandbox(config, Args{Mode: ModeHealthCheck}, root)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -147,7 +147,7 @@ func TestPodmanIntegration(t *testing.T) {
 						}
 					})
 				}
-				return supervise(ctx, config.Tools, plan, policy)
+				return plan.Run(ctx, config.Tools, policy)
 			}); err != nil {
 				t.Fatal(err)
 			}

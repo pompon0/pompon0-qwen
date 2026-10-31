@@ -24,7 +24,7 @@ for normal multi-user container images.
 
 ```sh
 cd /path/to/project
-qwen-box isolation-check
+qwen-box health-check
 qwen-box
 ```
 
@@ -41,7 +41,7 @@ marker is needed.
 ## Usage and configuration
 
 * `qwen-box [options] [qwen] [-- arguments...]` forwards arguments after `--` to Qwen.
-* `qwen-box isolation-check` tests filesystem, privileges, and sample network connections.
+* `qwen-box health-check` tests filesystem, privileges, networking, and installation/execution of the selected Qwen version.
 * `qwen-box help` prints help without starting the sandbox.
 * `--qwen-version VERSION` selects a published npm version or dist-tag; put it before `--`.
 * `--localnet host:port,...` explicitly allows local TCP and UDP endpoints; omit it for no local exceptions.
@@ -67,7 +67,7 @@ The default version is `latest`. Select a specific release or npm dist-tag at st
 qwen-box                              # latest
 qwen-box --qwen-version 0.26.1         # specific release
 qwen-box --qwen-version latest qwen -- --model your-model
-qwen-box --qwen-version 0.26.1 isolation-check
+qwen-box --qwen-version 0.26.1 health-check
 ```
 
 The launcher runs `npm exec --package=@qwen-code/qwen-code@VERSION -- qwen`
@@ -134,9 +134,15 @@ host home path.
   sandbox `.qwen`: read-only overlays on the writable launcher state.
 - `~/.cache/qwen-box/` → `~/.cache/`: the entire writable cache directory,
   shared across all launcher executions and repositories.
-- `/usr` and selected host name-service/certificate paths → the same paths:
-  read-only host programs, libraries, and system configuration.
-- Launcher executable → `/opt/qwen-box`: read-only firewall setup and isolation checks.
+- `/usr` → the same path: read-only host programs and libraries.
+- `/etc/nsswitch.conf` → the same path, when present: read-only libc lookup
+  configuration for hostnames and users.
+- `/etc/ssl/certs` and `/etc/ca-certificates` → the same paths, when present:
+  read-only host CA trust material for TLS verification.
+- Other host `/etc` contents are not mounted: read-only access would still
+  expose unrelated configuration and potentially secrets. DNS, hosts, and
+  user/group files are generated for the sandbox instead.
+- Launcher executable → `/opt/qwen-box`: read-only firewall setup and health-check.
 - `/tmp/qwen-box-run-*/rootfs/` → `/`: a read-only skeleton for one launch.
 - Fresh Podman tmpfs mounts → `/tmp` and `/run`: writable temporary storage,
   discarded with the container.
@@ -193,7 +199,7 @@ CGNAT, multicast, and reserved/documentation ranges. Host interfaces and routes
 are not inspected: public addresses remain allowed even when assigned to the
 host or used on a directly connected network. Each blacklist prefix has its own
 nftables rule; overlapping prefixes are valid without sorting or merging. DNS
-uses `1.1.1.1` and `2606:4700:4700::1111`. Public IPv6 connectivity depends on
+uses `1.1.1.1`. Public IPv6 connectivity depends on
 the host's IPv6 routes; the launcher does not disable either address family.
 
 Local access is controlled only by the launcher's explicit `--localnet` flag:
@@ -236,13 +242,14 @@ is allowed without granting TCP/UDP access to blocked destinations.
 | `policy.go` | nftables destination policy and explicit localnet TCP/UDP exceptions |
 | `sandbox.go` | Minimal rootfs, explicit host mounts, and Podman command arguments |
 | `supervisor.go` | Podman setup, workload execution, cancellation, and container cleanup |
-| `check.go` | Native Go isolation diagnostics executed inside the sandbox |
+| `check.go` | Native Go sandbox health-check, including Qwen installation and execution |
 | `packaging/aur/` | AUR recipe, metadata, and publishing workflow |
 
 The launcher registers version, localnet, and help flags with `pflag`, selects
 the optional mode from launcher positional arguments, and passes only arguments
 after `--` to Qwen without inspecting them.
-The launcher is mounted read-only inside the sandbox only for `isolation-check`.
+The launcher is mounted read-only inside every sandbox for firewall setup and
+also runs the checks for `health-check`.
 There is no custom namespace/TAP helper or embedded network stack.
 
 ## Isolation boundary
@@ -259,7 +266,7 @@ filesystem, and its standard seccomp restrictions.
 All workload capabilities are dropped and privilege gains are disabled.
 
 The launcher generates `/etc/hosts` with localhost entries,
-`/etc/resolv.conf` with its fixed public DNS servers, `/etc/hostname` with
+`/etc/resolv.conf` with its fixed public DNS server, `/etc/hostname` with
 `qwen-box`, and minimal `/etc/passwd` and `/etc/group` entries for `qwen`.
 The passwd entry and `HOME` use the resolved host home path. `/bin`, `/sbin`,
 `/lib`, and `/lib64` are symlinks into the read-only `/usr` mount. Selected host
@@ -305,7 +312,7 @@ go vet ./...
 
 Tests cover policy, project selection, environment filtering, credential seeding,
 sandbox plans, and Podman startup/failure/cancellation handling. The
-`isolation-check` mode checks actual filesystem/network isolation, writable
+`health-check` mode checks actual filesystem/network isolation, writable
 project/cache/Qwen state, and Node.js and selected Qwen version execution on a
 configured Linux host.
 

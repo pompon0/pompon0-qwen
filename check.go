@@ -26,7 +26,7 @@ type capabilityMask uint64
 
 var checkedCapabilities = [...]capabilityKind{"CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb"}
 
-func runIsolationChecks(ctx context.Context, version QwenVersion, canary string, output io.Writer) error {
+func runHealthCheck(ctx context.Context, version QwenVersion, canary string, output io.Writer) error {
 	if _, err := os.Stat(canary); !errors.Is(err, os.ErrNotExist) {
 		if err == nil {
 			return errors.New("FAIL: host canary visible")
@@ -138,7 +138,7 @@ func verifyNoUserNamespaces(ctx context.Context) error {
 }
 
 func verifyWritableDirectory(path string) error {
-	file, err := os.CreateTemp(path, ".qwen-isolation-check-*")
+	file, err := os.CreateTemp(path, ".qwen-health-check-*")
 	if err != nil {
 		return fmt.Errorf("check writable directory %s: %w", path, err)
 	}

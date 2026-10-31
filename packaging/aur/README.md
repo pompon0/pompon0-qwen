@@ -25,7 +25,7 @@ Runtime mounting structure:
 - Selected repository → the same absolute path: writable, except its root
   `.git` is mounted read-only.
 - Host `/usr` → sandbox `/usr`: read-only programs and libraries.
-- Launcher executable → sandbox `/opt/qwen-box`: read-only firewall setup and isolation checks.
+- Launcher executable → sandbox `/opt/qwen-box`: read-only firewall setup and health-check.
 - `/tmp/qwen-box-run-*/rootfs/` → sandbox `/`: a temporary skeleton passed
   to Podman with `--rootfs`, without building or downloading an image.
 - Fresh tmpfs mounts → sandbox `/tmp` and `/run`: writable temporary files.

@@ -138,7 +138,7 @@ func (policy NetworkPolicy) outputRules() [][]expr.Any {
 			rules = append(rules, accept(expressions...))
 		}
 	}
-	// IPv6 needs neighbor discovery, router discovery, and path-MTU errors.
+	// IPv6 needs outbound neighbor discovery and router solicitation.
 	// These control messages do not grant TCP/UDP access to blocked destinations.
 	for _, kind := range []ipv6.ICMPType{ipv6.ICMPTypeRouterSolicitation, ipv6.ICMPTypeNeighborSolicitation, ipv6.ICMPTypeNeighborAdvertisement} {
 		rules = append(rules, icmpv6Rule(kind, true))
@@ -153,6 +153,19 @@ func (policy NetworkPolicy) outputRules() [][]expr.Any {
 	return rules
 }
 
+// inputRules follows the official nftables dual-stack workstation example:
+// https://wiki.nftables.org/wiki-nftables/index.php/Simple_ruleset_for_a_workstation#fw.inet.basic
+//
+// With the default drop policy installed by Install, it permits:
+//   - Loopback traffic between processes inside the sandbox.
+//   - Packets belonging to established connections or related flows, so replies
+//     and connection-related ICMP errors can return.
+//   - IPv6 router advertisements, neighbor solicitations, and neighbor advertisements,
+//     which are needed for IPv6 connectivity before connections are established.
+//
+// The input chain's default drop policy discards all other incoming traffic,
+// including unsolicited TCP/UDP connections. Outbound restrictions are applied
+// separately by outputRules; the reference example leaves outbound traffic unrestricted.
 func inputRules() [][]expr.Any {
 	rules := [][]expr.Any{
 		accept(metaEquals(expr.MetaKeyIIFNAME, []byte("lo\x00"))...),
@@ -164,11 +177,8 @@ func inputRules() [][]expr.Any {
 			&expr.Verdict{Kind: expr.VerdictAccept},
 		},
 	}
-	for _, kind := range []ipv6.ICMPType{ipv6.ICMPTypeDestinationUnreachable, ipv6.ICMPTypePacketTooBig, ipv6.ICMPTypeTimeExceeded, ipv6.ICMPTypeParameterProblem} {
-		rules = append(rules, icmpv6Rule(kind, false))
-	}
 	for _, kind := range []ipv6.ICMPType{ipv6.ICMPTypeRouterAdvertisement, ipv6.ICMPTypeNeighborSolicitation, ipv6.ICMPTypeNeighborAdvertisement} {
-		rules = append(rules, icmpv6Rule(kind, true))
+		rules = append(rules, icmpv6Rule(kind, false))
 	}
 	return rules
 }

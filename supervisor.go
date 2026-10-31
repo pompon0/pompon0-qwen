@@ -18,11 +18,12 @@ const shutdownTimeout = 3 * time.Second
 
 // Podman owns namespaces, networking, mount setup, and container processes. The
 // launcher only orders its commands: trusted idle container, firewall, then Qwen.
-func supervise(ctx context.Context, tools Tools, plan SandboxPlan, policy NetworkPolicy) (err error) {
+func (plan SandboxPlan) Run(ctx context.Context, tools Tools, policy NetworkPolicy) (err error) {
 	var setup bytes.Buffer
 	if err := json.NewEncoder(&setup).Encode(policy); err != nil {
 		return fmt.Errorf("encode firewall policy: %w", err)
 	}
+	// Verify that podman supports rootless mode.
 	rootless, err := tools.RunPodman(ctx, strings.NewReader(""), "info", "--format", "{{.Host.Security.Rootless}}")
 	if err != nil {
 		return err
@@ -38,6 +39,7 @@ func supervise(ctx context.Context, tools Tools, plan SandboxPlan, policy Networ
 			err = errors.Join(err, fmt.Errorf("remove sandbox container: %w", cleanupErr))
 		}
 	}()
+	// Spawn the rootless pod.
 	if _, err := tools.RunPodman(ctx, strings.NewReader(""), plan.RunArguments...); err != nil {
 		return err
 	}

@@ -58,7 +58,7 @@ func testPlan(workload ...string) SandboxPlan {
 func TestPodmanSetupBeforeWorkloadAndExitStatus(t *testing.T) {
 	tools, directory := fakePodman(t)
 	policy := newNetworkPolicy([]netip.AddrPort{netip.MustParseAddrPort("192.168.1.50:11434"), netip.MustParseAddrPort("[fd12::50]:8000")})
-	err := supervise(t.Context(), tools, testPlan("/bin/bash", "-c", "test -f '"+filepath.Join(directory, "rules")+"'; exit 23"), policy)
+	err := testPlan("/bin/bash", "-c", "test -f '"+filepath.Join(directory, "rules")+"'; exit 23").Run(t.Context(), tools, policy)
 	if code, ok := errors.AsType[codeError](err); !ok || code.exitCode() != 23 {
 		t.Fatalf("expected workload status 23, got %v", err)
 	}
@@ -91,7 +91,7 @@ func TestPodmanSetupFailureDoesNotLaunchWorkload(t *testing.T) {
 		t.Fatal(err)
 	}
 	marker := filepath.Join(directory, "workload")
-	err := supervise(t.Context(), tools, testPlan("/usr/bin/touch", marker), NetworkPolicy{})
+	err := testPlan("/usr/bin/touch", marker).Run(t.Context(), tools, NetworkPolicy{})
 	if err == nil || !strings.Contains(err.Error(), "install sandbox firewall") {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -123,7 +123,7 @@ func TestPodmanCancellationRemovesContainer(t *testing.T) {
 					cancel()
 					return nil
 				})
-				return supervise(ctx, tools, testPlan("/bin/bash", "-c", test.prefix+"echo $$ > '"+pidPath+"'; exec sleep 30"), NetworkPolicy{})
+				return testPlan("/bin/bash", "-c", test.prefix+"echo $$ > '"+pidPath+"'; exec sleep 30").Run(ctx, tools, NetworkPolicy{})
 			})
 			if !errors.Is(err, context.Canceled) {
 				t.Fatalf("unexpected cancellation: %v", err)
@@ -157,7 +157,7 @@ func TestPodmanWorkloadExitStatus(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			tools, directory := fakePodman(t)
-			err := supervise(t.Context(), tools, testPlan("/bin/bash", "-c", test.command), NetworkPolicy{})
+			err := testPlan("/bin/bash", "-c", test.command).Run(t.Context(), tools, NetworkPolicy{})
 			if _, err := os.Stat(filepath.Join(directory, "removed")); err != nil {
 				t.Fatal("container was not removed", err)
 			}

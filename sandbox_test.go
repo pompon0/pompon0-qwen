@@ -17,7 +17,7 @@ func TestPodmanPlan(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(config.Home, ".qwen", "settings.json"), []byte("{}"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	for _, mode := range []Mode{ModeQwen, ModeIsolationCheck} {
+	for _, mode := range []Mode{ModeQwen, ModeHealthCheck} {
 		plan, err := buildSandbox(config, Args{Mode: mode, Version: "0.26.1", Arguments: []string{"--model", "local"}}, "/run-dir")
 		if err != nil {
 			t.Fatal(err)
@@ -114,9 +114,9 @@ func TestMinimalRootfs(t *testing.T) {
 	}
 }
 
-func TestIsolationCheckCreatesHostCanary(t *testing.T) {
+func TestHealthCheckCreatesHostCanary(t *testing.T) {
 	directory := t.TempDir()
-	if err := writeRunFiles(directory, "/host/home", ModeIsolationCheck); err != nil {
+	if err := writeRunFiles(directory, "/host/home", ModeHealthCheck); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(filepath.Join(directory, "host-canary")); err != nil {

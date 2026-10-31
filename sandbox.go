@@ -46,7 +46,7 @@ func runSandbox(ctx context.Context, invocation Args) error {
 	if err != nil {
 		return err
 	}
-	return supervise(ctx, config.Tools, plan, policy)
+	return plan.Run(ctx, config.Tools, policy)
 }
 
 func buildSandbox(config Config, invocation Args, runDir string) (SandboxPlan, error) {
@@ -94,6 +94,13 @@ func buildSandbox(config Config, invocation Args, runDir string) (SandboxPlan, e
 	for _, mount := range mounts {
 		args = append(args, "--mount", bindMount(mount.source, mount.target, mount.writable))
 	}
+	// Share only the /etc inputs needed by host tools:
+	//   - nsswitch.conf selects libc's hostname and user lookup sources.
+	//   - ssl/certs and ca-certificates provide host CA trust material for TLS.
+	// Keep them read-only to protect lookup configuration and certificate trust.
+	// Mounting all of /etc would also expose unrelated host configuration and
+	// potentially secrets; read-only mounts do not prevent reads. DNS, hosts,
+	// and user/group files are generated separately for the sandbox.
 	for _, path := range []string{"/etc/nsswitch.conf", "/etc/ssl/certs", "/etc/ca-certificates"} {
 		if _, err := os.Stat(path); err == nil {
 			args = append(args, "--mount", bindMount(path, path, false))
@@ -115,8 +122,8 @@ func buildSandbox(config Config, invocation Args, runDir string) (SandboxPlan, e
 	switch invocation.Mode {
 	case ModeQwen:
 		workload = config.Tools.qwenCommand(invocation.Version, invocation.Arguments)
-	case ModeIsolationCheck:
-		workload = []string{sandboxLauncherPath, string(ModeIsolationProbe), "--qwen-version", invocation.Version.String(), filepath.Join(runDir, "host-canary")}
+	case ModeHealthCheck:
+		workload = []string{sandboxLauncherPath, string(ModeHealthCheckProbe), "--qwen-version", invocation.Version.String(), filepath.Join(runDir, "host-canary")}
 	default:
 		return SandboxPlan{}, fmt.Errorf("unknown sandbox mode %q", invocation.Mode)
 	}
@@ -163,7 +170,7 @@ func writeRunFiles(runDir, home string, mode Mode) error {
 		}
 	}
 	files := map[string]string{
-		"etc/resolv.conf": "nameserver 1.1.1.1\nnameserver 2606:4700:4700::1111\n",
+		"etc/resolv.conf": "nameserver 1.1.1.1\n",
 		"etc/hosts":       "127.0.0.1 localhost\n::1 localhost\n",
 		"etc/passwd":      fmt.Sprintf("qwen:x:0:0:Qwen:%s:/usr/bin/bash\n", home),
 		"etc/group":       "qwen:x:0:\n",
@@ -174,7 +181,7 @@ func writeRunFiles(runDir, home string, mode Mode) error {
 			return fmt.Errorf("WriteFile(%s): %w", name, err)
 		}
 	}
-	if mode == ModeIsolationCheck {
+	if mode == ModeHealthCheck {
 		if err := os.WriteFile(filepath.Join(runDir, "host-canary"), []byte("host-only\n"), 0o600); err != nil {
 			return fmt.Errorf("WriteFile(host-canary): %w", err)
 		}

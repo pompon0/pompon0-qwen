@@ -16,15 +16,15 @@ func TestLauncherParsingPreservesForwardedArguments(t *testing.T) {
 		{mode: ModeQwen},
 		{args: []string{"qwen"}, mode: ModeQwen},
 		{args: []string{"qwen", "--", "--model", "local"}, mode: ModeQwen, forwarded: []string{"--model", "local"}},
-		{args: []string{"--", "--model=local", "--new-qwen-option", "value", "--", "isolation-check"}, mode: ModeQwen, forwarded: []string{"--model=local", "--new-qwen-option", "value", "--", "isolation-check"}},
-		{args: []string{"--", "--prompt", "isolation-check"}, mode: ModeQwen, forwarded: []string{"--prompt", "isolation-check"}},
-		{args: []string{"qwen", "--", "--", "--help", "isolation-check"}, mode: ModeQwen, forwarded: []string{"--", "--help", "isolation-check"}},
+		{args: []string{"--", "--model=local", "--new-qwen-option", "value", "--", "health-check"}, mode: ModeQwen, forwarded: []string{"--model=local", "--new-qwen-option", "value", "--", "health-check"}},
+		{args: []string{"--", "--prompt", "health-check"}, mode: ModeQwen, forwarded: []string{"--prompt", "health-check"}},
+		{args: []string{"qwen", "--", "--", "--help", "health-check"}, mode: ModeQwen, forwarded: []string{"--", "--help", "health-check"}},
 		{args: []string{"--", "--help"}, mode: ModeQwen, forwarded: []string{"--help"}},
 		{args: []string{"--", "-h"}, mode: ModeQwen, forwarded: []string{"-h"}},
-		{args: []string{"--", "isolation-check"}, mode: ModeQwen, forwarded: []string{"isolation-check"}},
+		{args: []string{"--", "health-check"}, mode: ModeQwen, forwarded: []string{"health-check"}},
 		{args: []string{"--help"}, mode: ModeHelp},
 		{args: []string{"-h"}, mode: ModeHelp},
-		{args: []string{"isolation-check"}, mode: ModeIsolationCheck},
+		{args: []string{"health-check"}, mode: ModeHealthCheck},
 	} {
 		original := slices.Clone(test.args)
 		got, err := parseArgs(test.args)
@@ -38,7 +38,7 @@ func TestLauncherParsingPreservesForwardedArguments(t *testing.T) {
 }
 
 func TestRejectInvalidLauncherModes(t *testing.T) {
-	for _, args := range [][]string{{""}, {"shell"}, {"invalid"}, {"isolation-check", "extra"}, {string(ModeIsolationProbe)}} {
+	for _, args := range [][]string{{""}, {"shell"}, {"invalid"}, {"health-check", "extra"}, {string(ModeHealthCheckProbe)}} {
 		if _, err := parseArgs(args); err == nil {
 			t.Errorf("accepted %v", args)
 		}
@@ -46,7 +46,7 @@ func TestRejectInvalidLauncherModes(t *testing.T) {
 }
 
 func TestLauncherRejectsEndpointFlags(t *testing.T) {
-	for _, mode := range [][]string{{}, {"qwen"}, {"isolation-check"}} {
+	for _, mode := range [][]string{{}, {"qwen"}, {"health-check"}} {
 		for _, flag := range []string{"--model=local", "-mlocal", "--auth-type=openai", "--openai-base-url=http://192.168.1.50:11434/v1"} {
 			arguments := append(slices.Clone(mode), flag)
 			if _, err := parseArgs(arguments); err == nil {
@@ -62,7 +62,7 @@ func TestLauncherRejectsEndpointFlags(t *testing.T) {
 	for _, arguments := range [][]string{
 		{"--model"}, {"--auth-type"}, {"--openai-base-url"},
 		{"--unknown-qwen-flag=value"}, {"--prompt", "hello"},
-		{"qwen", "prompt"}, {"isolation-check", "--", "--model=other"},
+		{"qwen", "prompt"}, {"health-check", "--", "--model=other"},
 	} {
 		if _, err := parseArgs(arguments); err == nil {
 			t.Errorf("accepted invalid launcher arguments %v", arguments)
@@ -74,7 +74,7 @@ func TestLocalnetFlag(t *testing.T) {
 	for _, arguments := range [][]string{
 		{"--localnet=192.168.1.50:11434,[fd12::50]:8000"},
 		{"qwen", "--localnet", "192.168.1.50:11434,[fd12::50]:8000"},
-		{"--localnet=192.168.1.50:11434,[fd12::50]:8000", "isolation-check"},
+		{"--localnet=192.168.1.50:11434,[fd12::50]:8000", "health-check"},
 		{"--localnet", " [::ffff:192.168.1.50]:11434,192.168.1.50:11434,[fd12::50]:8000 "},
 	} {
 		got, err := parseArgs(arguments)
@@ -111,10 +111,10 @@ func TestLauncherHelp(t *testing.T) {
 	if err := printHelp(&output, args.Arguments); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(output.String(), "internal-") || strings.Contains(output.String(), string(ModeIsolationProbe)) {
+	if strings.Contains(output.String(), "internal-") || strings.Contains(output.String(), string(ModeHealthCheckProbe)) {
 		t.Fatal("private protocol flags exposed in help")
 	}
-	for _, name := range []string{"qwen", "isolation-check", "help", "--qwen-version", "--localnet"} {
+	for _, name := range []string{"qwen", "health-check", "help", "--qwen-version", "--localnet"} {
 		if !strings.Contains(output.String(), name) {
 			t.Errorf("help is missing %s", name)
 		}
@@ -147,7 +147,7 @@ func TestQwenVersionSelection(t *testing.T) {
 		{arguments: []string{"--qwen-version", "0.26.1"}, version: "0.26.1", mode: ModeQwen},
 		{arguments: []string{"--qwen-version=nightly", "--", "--model", "local"}, version: "nightly", mode: ModeQwen, forwarded: []string{"--model", "local"}},
 		{arguments: []string{"--qwen-version", "0.26.1", "qwen", "--", "--prompt", "--qwen-version=other"}, version: "0.26.1", mode: ModeQwen, forwarded: []string{"--prompt", "--qwen-version=other"}},
-		{arguments: []string{"--qwen-version", "0.26.1", "isolation-check"}, version: "0.26.1", mode: ModeIsolationCheck},
+		{arguments: []string{"--qwen-version", "0.26.1", "health-check"}, version: "0.26.1", mode: ModeHealthCheck},
 	} {
 		args, err := parseArgs(test.arguments)
 		if err != nil {
@@ -172,16 +172,16 @@ func TestRejectInvalidQwenVersions(t *testing.T) {
 	}
 }
 
-func TestIsolationProbeParsesFlags(t *testing.T) {
-	if _, err := parseArgs([]string{string(ModeIsolationProbe), "--unknown"}); err == nil || !strings.Contains(err.Error(), "unknown flag") {
+func TestHealthCheckProbeParsesFlags(t *testing.T) {
+	if _, err := parseArgs([]string{string(ModeHealthCheckProbe), "--unknown"}); err == nil || !strings.Contains(err.Error(), "unknown flag") {
 		t.Fatalf("unknown probe flag was not rejected: %v", err)
 	}
-	args, err := parseArgs([]string{string(ModeIsolationProbe), "--help"})
-	if err != nil || args.Mode != ModeHelp || !slices.Equal(args.Arguments, []string{string(ModeIsolationProbe)}) {
+	args, err := parseArgs([]string{string(ModeHealthCheckProbe), "--help"})
+	if err != nil || args.Mode != ModeHelp || !slices.Equal(args.Arguments, []string{string(ModeHealthCheckProbe)}) {
 		t.Fatalf("probe help failed: %+v, %v", args, err)
 	}
-	args, err = parseArgs([]string{string(ModeIsolationProbe), "--qwen-version", "0.26.1", "/host/canary"})
-	if err != nil || args.Mode != ModeIsolationProbe || args.Version != "0.26.1" || !slices.Equal(args.Arguments, []string{"/host/canary"}) {
+	args, err = parseArgs([]string{string(ModeHealthCheckProbe), "--qwen-version", "0.26.1", "/host/canary"})
+	if err != nil || args.Mode != ModeHealthCheckProbe || args.Version != "0.26.1" || !slices.Equal(args.Arguments, []string{"/host/canary"}) {
 		t.Fatalf("probe dispatch: %+v, %v", args, err)
 	}
 }

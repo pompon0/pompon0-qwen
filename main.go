@@ -50,10 +50,10 @@ func main() {
 			return err
 		}
 		switch args.Mode {
-		case ModeQwen, ModeIsolationCheck:
+		case ModeQwen, ModeHealthCheck:
 			return runSandbox(ctx, args)
-		case ModeIsolationProbe:
-			return runIsolationChecks(ctx, args.Version, args.Arguments[0], os.Stdout)
+		case ModeHealthCheckProbe:
+			return runHealthCheck(ctx, args.Version, args.Arguments[0], os.Stdout)
 		case ModeFirewallSetup:
 			return installFirewall(os.Stdin)
 		case ModeHelp:
@@ -74,13 +74,13 @@ func main() {
 type Mode string
 
 const (
-	ModeQwen           Mode = "qwen"
-	ModeIsolationCheck Mode = "isolation-check"
-	ModeHelp           Mode = "help"
+	ModeQwen        Mode = "qwen"
+	ModeHealthCheck Mode = "health-check"
+	ModeHelp        Mode = "help"
 	// The probe runs inside the sandbox and bypasses host configuration discovery.
 	// It must never load project code, Qwen configuration, or hooks.
-	ModeIsolationProbe Mode = "internal-isolation-probe"
-	ModeFirewallSetup  Mode = "internal-firewall-setup"
+	ModeHealthCheckProbe Mode = "internal-health-check-probe"
+	ModeFirewallSetup    Mode = "internal-firewall-setup"
 )
 
 type Args struct {
@@ -115,7 +115,7 @@ func parseArgs(arguments []string) (Args, error) {
 	}
 
 	switch result.Mode {
-	case ModeQwen, ModeIsolationCheck, ModeIsolationProbe, ModeFirewallSetup, ModeHelp:
+	case ModeQwen, ModeHealthCheck, ModeHealthCheckProbe, ModeFirewallSetup, ModeHelp:
 	default:
 		return Args{}, fmt.Errorf("unknown launcher command %q", result.Mode)
 	}
@@ -136,15 +136,15 @@ func parseArgs(arguments []string) (Args, error) {
 		}
 		result.Arguments = forwarded
 		return result, nil
-	case ModeIsolationCheck:
+	case ModeHealthCheck:
 		if len(positionals) != 0 {
-			return Args{}, fmt.Errorf("isolation-check accepts no positional arguments")
+			return Args{}, fmt.Errorf("health-check accepts no positional arguments")
 		}
 	case ModeFirewallSetup:
 		if len(positionals) != 0 {
 			return Args{}, fmt.Errorf("%s accepts no positional arguments", result.Mode)
 		}
-	case ModeIsolationProbe:
+	case ModeHealthCheckProbe:
 		if len(positionals) != 1 {
 			return Args{}, fmt.Errorf("%s requires HOST_CANARY", result.Mode)
 		}
@@ -154,7 +154,7 @@ func parseArgs(arguments []string) (Args, error) {
 		}
 		if len(positionals) == 1 {
 			switch Mode(positionals[0]) {
-			case ModeQwen, ModeIsolationCheck, ModeIsolationProbe, ModeHelp:
+			case ModeQwen, ModeHealthCheck, ModeHealthCheckProbe, ModeHelp:
 			default:
 				return Args{}, fmt.Errorf("unknown help command %q", positionals[0])
 			}
@@ -169,12 +169,12 @@ func printHelp(output io.Writer, arguments []string) error {
 
 Usage:
   qwen-box [options] [qwen] [-- arguments...]
-  qwen-box [options] isolation-check
+  qwen-box [options] health-check
   qwen-box help [command]
 
 Commands:
   qwen             Run Qwen Code (default)
-  isolation-check  Check filesystem, privileges, and networking isolation
+  health-check      Check sandbox isolation and Qwen installation
   help             Show launcher help
 
 Options:
@@ -201,14 +201,15 @@ Run Qwen Code. All arguments after -- are forwarded unchanged,
 including -h and --help. Use --localnet before -- to grant local TCP/UDP access;
 Qwen configuration and arguments cannot change the firewall exceptions.
 `
-		case ModeIsolationCheck:
-			text = `Usage: qwen-box [options] isolation-check
+		case ModeHealthCheck:
+			text = `Usage: qwen-box [options] health-check
 
 Check filesystem, privileges, and networking isolation inside a fresh sandbox.
-Use -h or --help after isolation-check to show this help.
+Verify Node.js and installation/execution of the selected Qwen version.
+Use -h or --help after health-check to show this help.
 `
-		case ModeIsolationProbe:
-			text = "Usage: qwen-box internal-isolation-probe HOST_CANARY\n"
+		case ModeHealthCheckProbe:
+			text = "Usage: qwen-box internal-health-check-probe HOST_CANARY\n"
 		}
 	}
 	if _, err := fmt.Fprint(output, text); err != nil {
