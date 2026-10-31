@@ -99,7 +99,16 @@ func TestEnvironmentAllowlist(t *testing.T) {
 	for _, name := range []string{"GOCACHE", "GOMODCACHE"} {
 		host[name] = "/host/manual-go-cache"
 	}
-	env := sandboxEnvironment("/host", func(name string) (string, bool) { value, ok := host[name]; return value, ok })
+	for name, value := range host {
+		t.Setenv(name, value)
+	}
+	for _, name := range []string{"TERM", "OPENAI_BASE_URL"} {
+		t.Setenv(name, "")
+		if err := os.Unsetenv(name); err != nil {
+			t.Fatal(err)
+		}
+	}
+	env := (Config{Home: "/host"}).Environment()
 	if env["HOME"] != "/host" || env["PATH"] != "/usr/bin" || env["TERM"] != "xterm-256color" {
 		t.Fatal("sandbox paths or defaults were not applied")
 	}

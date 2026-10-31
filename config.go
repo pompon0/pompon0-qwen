@@ -30,27 +30,31 @@ func (t *Tools) RunPodman(ctx context.Context, input io.Reader, args ...string) 
 	return strings.TrimSpace(output.String()), nil
 }
 
-// Config holds host paths and the explicit environment passed to the sandbox.
+// Config holds host paths and tools used to build sandbox mounts and environment.
 type Config struct {
-	Project          string // Repository mounted at the same absolute path; root .git is read-only.
-	WorkingDirectory string // Host working directory, a subdirectory of Project.
+	Overrides        modelOverrides // Launcher endpoint overrides; Qwen receives only arguments after --.
+	Project          string         // Repository mounted at the same absolute path; root .git is read-only.
+	WorkingDirectory string         // Host working directory, a subdirectory of Project.
 	// Home is the resolved host home directory; it is not mounted as a whole.
 	// Derived paths and settings:
-	//   - Home/.local/state/qwen-box -> Home/.qwen [rw]: qwen state shared across qwen-box instances. 
+	//   - Home/.local/state/qwen-box -> Home/.qwen [rw]: qwen state shared across qwen-box instances.
 	//   - Home/.cache/qwen-box -> Home/.cache [rw]: cache shared across qwen-box instances (GO and NPM caches are also there)
-	//   - Home/.qwen/<configs> -> Home/.qwen/<configs> [ro]: qwen configuration 
-	//   - Home/.qwen/<creds> -> Home/.qwen/<creds> [copy]: qwen initial oauth credentials 
+	//   - Home/.qwen/<configs> -> Home/.qwen/<configs> [ro]: qwen configuration
+	//   - Home/.qwen/<creds> -> Home/.qwen/<creds> [copy]: qwen initial oauth credentials
 	//   - HOME and the generated passwd entry: the same resolved home path.
-	Home        string
-	Tools       Tools             // Host executables used to create and supervise the sandbox.
-	Environment map[string]string // Explicit environment passed to sandbox processes.
+	Home  string
+	Tools Tools // Host executables used to create and supervise the sandbox.
+}
+
+type modelOverrides struct {
+	Model, AuthType, BaseURL string
 }
 
 func (c Config) stateDir() string { return filepath.Join(c.Home, ".local/state/qwen-box") }
 
 func (c Config) cacheDir() string { return filepath.Join(c.Home, ".cache/qwen-box") }
 
-// discoverConfig builds the sandbox configuration from the host working
+// discoverConfig completes the parsed configuration from the host working
 // directory and environment. It rejects root users and resolves symlinks in the
 // working and home directories before choosing the nearest ancestor with a .git
 // directory or regular file. The search excludes the filesystem root; a symlink
@@ -74,8 +78,7 @@ func (c Config) cacheDir() string { return filepath.Join(c.Home, ".cache/qwen-bo
 // xterm-256color), and forwards only OPENAI_BASE_URL,
 // OPENAI_API_KEY, and OPENAI_MODEL from the remaining host environment, including
 // explicitly empty values. Callers must discard the configuration on error.
-func discoverConfig() (Config, error) {
-	var c Config
+func discoverConfig(c Config) (Config, error) {
 	if os.Geteuid() == 0 {
 		return c, fmt.Errorf("run as your ordinary host user, without sudo")
 	}
@@ -119,11 +122,12 @@ func discoverConfig() (Config, error) {
 	if err := os.MkdirAll(filepath.Join(c.cacheDir(), "npm"), 0o700); err != nil {
 		return c, fmt.Errorf("MkdirAll(cache): %w", err)
 	}
-	c.Environment = sandboxEnvironment(c.Home, os.LookupEnv)
 	return c, nil
 }
 
 func discoverTools() (Tools, error) {
+	// Our Arch dependencies install these executables at package-owned /usr/bin
+	// paths, preserved inside the sandbox by the read-only /usr mount.
 	t := Tools{
 		Podman: "/usr/bin/podman",
 		NFT:    "/usr/bin/nft",
@@ -165,14 +169,15 @@ func findProjectRoot(cwd string) (string, error) {
 	return "", fmt.Errorf("refusing to expose %s: no .git directory or file in this directory or an eligible parent; run inside a Git repository; / cannot be a project root", cwd)
 }
 
-func sandboxEnvironment(home string, lookup func(string) (string, bool)) map[string]string {
-	term, ok := lookup("TERM")
+// Environment derives the sandbox environment from Home and allowlisted host variables.
+func (c Config) Environment() map[string]string {
+	term, ok := os.LookupEnv("TERM")
 	if !ok {
 		term = "xterm-256color"
 	}
-	cache := filepath.Join(home, ".cache")
+	cache := filepath.Join(c.Home, ".cache")
 	env := map[string]string{
-		"HOME":             home,
+		"HOME":             c.Home,
 		"USER":             "qwen",
 		"LOGNAME":          "qwen",
 		"PATH":             "/usr/bin",
@@ -183,7 +188,7 @@ func sandboxEnvironment(home string, lookup func(string) (string, bool)) map[str
 		"GOPATH":           filepath.Join(cache, "go"),
 	}
 	for _, name := range []string{"OPENAI_BASE_URL", "OPENAI_API_KEY", "OPENAI_MODEL"} {
-		if value, ok := lookup(name); ok {
+		if value, ok := os.LookupEnv(name); ok {
 			env[name] = value
 		}
 	}

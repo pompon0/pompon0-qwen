@@ -96,18 +96,21 @@ func TestPrivateQwenStateWithoutHostConfiguration(t *testing.T) {
 }
 
 func TestConfiguredModelServer(t *testing.T) {
+	for _, name := range []string{"OPENAI_BASE_URL", "OPENAI_API_KEY", "OPENAI_MODEL"} {
+		t.Setenv(name, "")
+	}
 	home := t.TempDir()
 	if err := os.Mkdir(filepath.Join(home, ".qwen"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	settingsPath := filepath.Join(home, ".qwen/settings.json")
-	if server, err := configuredModelEndpoint(t.Context(), home, nil, Args{Mode: ModeQwen}); len(server.Addresses) != 0 || err != nil {
+	if server, err := (Config{Home: home}).modelEndpoint(t.Context()); len(server.Addresses) != 0 || err != nil {
 		t.Fatalf("missing settings: %v, %v", server, err)
 	}
 	if err := os.WriteFile(settingsPath, []byte(localModelSettings), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	server, err := configuredModelEndpoint(t.Context(), home, nil, Args{Mode: ModeQwen})
+	server, err := (Config{Home: home}).modelEndpoint(t.Context())
 	if err != nil || len(server.Addresses) != 1 || server.Addresses[0].String() != "192.168.1.50:11434" {
 		t.Fatalf("configured endpoint: %v, %v", server, err)
 	}
@@ -115,10 +118,19 @@ func TestConfiguredModelServer(t *testing.T) {
 	if rules := policy.NFTables(); !strings.Contains(rules, "ip daddr 192.168.1.50 tcp dport 11434 accept") || strings.Contains(rules, "ip daddr 192.168.1.60 tcp dport 8000 accept") {
 		t.Fatal("policy must allow only the selected endpoint")
 	}
+	invocation, err := parseArgs([]string{"--model", "other"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	invocation.Config.Home = home
+	other, err := invocation.Config.modelEndpoint(t.Context())
+	if err != nil || len(other.Addresses) != 1 || other.Addresses[0].String() != "192.168.1.60:8000" {
+		t.Fatalf("configured override endpoint: %v, %v", other, err)
+	}
 	if err := os.WriteFile(settingsPath, []byte(`{"model":`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := configuredModelEndpoint(t.Context(), home, nil, Args{Mode: ModeQwen}); err == nil {
+	if _, err := (Config{Home: home}).modelEndpoint(t.Context()); err == nil {
 		t.Fatal("invalid settings did not fail closed")
 	}
 }
@@ -132,7 +144,7 @@ func TestQwenSettingsCannotEscapeSandboxHome(t *testing.T) {
 	if err := os.Symlink(outside, filepath.Join(home, ".qwen")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := configuredModelEndpoint(t.Context(), home, nil, Args{Mode: ModeQwen}); err == nil {
+	if _, err := (Config{Home: home}).modelEndpoint(t.Context()); err == nil {
 		t.Fatal("followed settings symlink outside sandbox home")
 	}
 }
@@ -179,7 +191,7 @@ func TestQwenEndpointSelection(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			got, err := settings.modelEndpoint(test.env, invocation)
+			got, err := settings.modelEndpoint(test.env, invocation.Config.Overrides)
 			if (err != nil) != test.wantError || got != test.want {
 				t.Fatalf("endpoint=%q, error=%v; want %q, error=%v", got, err, test.want, test.wantError)
 			}
@@ -193,7 +205,7 @@ func TestEndpointVariableExpansion(t *testing.T) {
 		t.Fatal(err)
 	}
 	settings.Env["MODEL_HOST"], settings.Env["MODEL_PORT"] = "192.168.1.50", "11434"
-	endpoint, err := settings.modelEndpoint(map[string]string{"MODEL_PORT": "8000"}, Args{Mode: ModeQwen})
+	endpoint, err := settings.modelEndpoint(map[string]string{"MODEL_PORT": "8000"}, modelOverrides{})
 	if err != nil || endpoint != "http://192.168.1.50:8000/v1" {
 		t.Fatalf("endpoint %q, %v", endpoint, err)
 	}
@@ -211,7 +223,7 @@ func TestEndpointResolutionIgnoresQwenArguments(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	endpoint, err := settings.modelEndpoint(map[string]string{}, invocation)
+	endpoint, err := settings.modelEndpoint(map[string]string{}, invocation.Config.Overrides)
 	if err != nil || endpoint != "http://192.168.1.50:11434/v1" {
 		t.Fatalf("Qwen arguments changed endpoint: %q, %v", endpoint, err)
 	}

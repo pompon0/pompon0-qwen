@@ -50,12 +50,12 @@ func TestLauncherEndpointOverrides(t *testing.T) {
 	for _, mode := range [][]string{{}, {"qwen"}, {"isolation-check"}} {
 		arguments := append(slices.Clone(mode), "-mlocal", "--auth-type", "openai", "--openai-base-url="+want.BaseURL)
 		got, err := parseArgs(arguments)
-		if err != nil || got.Overrides != want || len(got.Arguments) != 0 {
+		if err != nil || got.Config.Overrides != want || len(got.Arguments) != 0 {
 			t.Fatalf("launcher overrides: %+v, %v", got, err)
 		}
 	}
 	got, err := parseArgs([]string{"--model=local", "--", "--model=other", "--auth-type=anthropic", "--openai-base-url=other", "--qwen-version=other"})
-	if err != nil || got.Overrides != (modelOverrides{Model: "local"}) || got.Version != "latest" {
+	if err != nil || got.Config.Overrides != (modelOverrides{Model: "local"}) || got.Version != "latest" {
 		t.Fatalf("Qwen arguments affected launcher options: %+v, %v", got, err)
 	}
 	for _, arguments := range [][]string{

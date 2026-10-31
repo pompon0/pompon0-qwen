@@ -22,7 +22,7 @@ const (
 type Args struct {
 	Mode      Mode
 	Version   QwenVersion
-	Overrides modelOverrides
+	Config    Config
 	Arguments []string
 }
 
@@ -31,9 +31,9 @@ func parseArgs(arguments []string) (Args, error) {
 	flags := pflag.NewFlagSet("qwen-box", pflag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	flags.Var(&result.Version, "qwen-version", "Qwen npm version or dist-tag")
-	flags.StringVarP(&result.Overrides.Model, "model", "m", "", "Model selection for endpoint resolution")
-	flags.StringVar(&result.Overrides.AuthType, "auth-type", "", "Provider authentication type for endpoint resolution")
-	flags.StringVar(&result.Overrides.BaseURL, "openai-base-url", "", "Model endpoint fallback")
+	flags.StringVarP(&result.Config.Overrides.Model, "model", "m", "", "Model selection for endpoint resolution")
+	flags.StringVar(&result.Config.Overrides.AuthType, "auth-type", "", "Provider authentication type for endpoint resolution")
+	flags.StringVar(&result.Config.Overrides.BaseURL, "openai-base-url", "", "Model endpoint fallback")
 	help := flags.BoolP("help", "h", false, "Launcher command help")
 	// The first -- separates launcher options from opaque Qwen arguments.
 	var forwarded []string

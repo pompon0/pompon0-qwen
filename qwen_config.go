@@ -39,10 +39,6 @@ type qwenModel struct {
 	WireAPI string `json:"wireApi"`
 }
 
-type modelOverrides struct {
-	Model, AuthType, BaseURL string
-}
-
 // These host-owned inputs are mounted read-only over writable launcher-owned
 // Qwen state. Other host .qwen contents, including manual sessions, are not shared.
 var qwenSharedConfiguration = [...]string{
@@ -124,12 +120,12 @@ func seedQwenCredential(host, private *os.Root, name string) error {
 // Read the host's ~/.qwen user configuration shared read-only with the sandbox,
 // never project-supplied settings. No Qwen/project code executes
 // while the supervisor still has authority over the firewall.
-func configuredModelEndpoint(ctx context.Context, home string, environment map[string]string, invocation Args) (ModelEndpoint, error) {
-	path := filepath.Join(home, ".qwen/settings.json")
+func (c Config) modelEndpoint(ctx context.Context) (ModelEndpoint, error) {
+	path := filepath.Join(c.Home, ".qwen/settings.json")
 	var settings qwenSettings
 	// Bound host settings reads to the host home. A symlink must not make the
 	// supervisor read files outside that root that are unavailable in the sandbox.
-	root, err := os.OpenRoot(home)
+	root, err := os.OpenRoot(c.Home)
 	if err != nil {
 		return ModelEndpoint{}, fmt.Errorf("open Qwen home: %w", err)
 	}
@@ -147,7 +143,7 @@ func configuredModelEndpoint(ctx context.Context, home string, environment map[s
 			return ModelEndpoint{}, fmt.Errorf("invalid Qwen user settings at %s: %w", path, err)
 		}
 	}
-	endpoint, err := settings.modelEndpoint(environment, invocation)
+	endpoint, err := settings.modelEndpoint(c.Environment(), c.Overrides)
 	if err != nil {
 		return ModelEndpoint{}, err
 	}
@@ -161,12 +157,10 @@ func configuredModelEndpoint(ctx context.Context, home string, environment map[s
 // Endpoint resolution intentionally stays separate from filter installation.
 // Model provider metadata wins over CLI/env/legacy endpoint fallbacks, following
 // Qwen's documented resolution layers. Only one selected route grants access.
-func (settings qwenSettings) modelEndpoint(environment map[string]string, invocation Args) (string, error) {
+func (settings qwenSettings) modelEndpoint(environment map[string]string, overrides modelOverrides) (string, error) {
 	env := make(map[string]string, len(settings.Env)+len(environment))
 	maps.Copy(env, settings.Env)
 	maps.Copy(env, environment)
-	overrides := invocation.Overrides
-
 	expand := func(value string) string { return expandEndpointVariables(value, env) }
 	authType := cmp.Or(overrides.AuthType, expand(settings.Security.Auth.SelectedType))
 	if authType == "" && env["OPENAI_API_KEY"] != "" && env["OPENAI_BASE_URL"] != "" && env["OPENAI_MODEL"] != "" {

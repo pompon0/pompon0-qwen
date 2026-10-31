@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -22,6 +23,9 @@ import (
 func TestPodmanIntegration(t *testing.T) {
 	if os.Getenv("POMPON_PODMAN_INTEGRATION") != "1" {
 		t.Skip("set POMPON_PODMAN_INTEGRATION=1 to test a live rootless Podman sandbox")
+	}
+	for _, name := range []string{"OPENAI_BASE_URL", "OPENAI_API_KEY", "OPENAI_MODEL"} {
+		t.Setenv(name, "")
 	}
 	addresses, err := net.InterfaceAddrs()
 	if err != nil {
@@ -66,13 +70,12 @@ func TestPodmanIntegration(t *testing.T) {
 			deniedAddress := netip.AddrPortFrom(test.target, netip.MustParseAddrPort(other.Listener.Addr().String()).Port())
 			directory := t.TempDir()
 			root := filepath.Join(directory, "run")
-			config := Config{Project: filepath.Join(directory, "project"), Home: filepath.Join(directory, "home"), WorkingDirectory: filepath.Join(directory, "project", "nested"), Tools: Tools{Podman: "/usr/bin/podman", NFT: "/usr/bin/nft", IP: "/usr/bin/ip", Node: "/usr/bin/node", NPM: "/usr/bin/npm"}, Environment: map[string]string{}}
+			config := Config{Project: filepath.Join(directory, "project"), Home: filepath.Join(directory, "home"), WorkingDirectory: filepath.Join(directory, "project", "nested"), Tools: Tools{Podman: "/usr/bin/podman", NFT: "/usr/bin/nft", IP: "/usr/bin/ip", Node: "/usr/bin/node", NPM: "/usr/bin/npm"}}
 			for _, path := range []string{filepath.Join(config.Project, ".git"), config.WorkingDirectory, filepath.Join(config.Home, ".qwen"), filepath.Join(config.cacheDir(), "npm"), config.stateDir(), root} {
 				if err := os.MkdirAll(path, 0o700); err != nil {
 					t.Fatal(err)
 				}
 			}
-			config.Environment = sandboxEnvironment(config.Home, func(string) (string, bool) { return "", false })
 			for _, name := range []string{".qwen/settings.json", ".qwen/.env", ".qwen/oauth_creds.json", ".qwen/manual-session", "host-secret", ".cache/manual-cache"} {
 				if err := os.WriteFile(filepath.Join(config.Home, name), []byte("host data"), 0o600); err != nil {
 					t.Fatal(err)
@@ -81,12 +84,14 @@ func TestPodmanIntegration(t *testing.T) {
 			if err := prepareQwenState(config.Home, config.stateDir()); err != nil {
 				t.Fatal(err)
 			}
-			config.Environment["POMPON_PODMAN_PROBE"] = "1"
-			config.Environment["POMPON_TEST_PROJECT"] = config.Project
-			config.Environment["POMPON_TEST_CWD"] = config.WorkingDirectory
-			config.Environment["POMPON_TEST_MODEL"] = net.JoinHostPort("model.test", fmt.Sprint(modelAddress.Port()))
-			config.Environment["POMPON_TEST_DENIED"] = deniedAddress.String()
-			config.Environment["POMPON_TEST_CANARY"] = filepath.Join(root, "host-canary")
+			probeEnvironment := map[string]string{
+				"POMPON_PODMAN_PROBE": "1",
+				"POMPON_TEST_PROJECT": config.Project,
+				"POMPON_TEST_CWD":     config.WorkingDirectory,
+				"POMPON_TEST_MODEL":   net.JoinHostPort("model.test", fmt.Sprint(modelAddress.Port())),
+				"POMPON_TEST_DENIED":  deniedAddress.String(),
+				"POMPON_TEST_CANARY":  filepath.Join(root, "host-canary"),
+			}
 			endpoint := ModelEndpoint{Hostname: "model.test", Addresses: []netip.AddrPort{modelAddress}}
 			if err := writeRunFiles(root, config.Home, ModeIsolationCheck, endpoint); err != nil {
 				t.Fatal(err)
@@ -94,6 +99,9 @@ func TestPodmanIntegration(t *testing.T) {
 			plan, err := buildSandbox(config, Args{Mode: ModeIsolationCheck}, root)
 			if err != nil {
 				t.Fatal(err)
+			}
+			for key, value := range probeEnvironment {
+				plan.RunArguments = slices.Insert(plan.RunArguments, 1, "--env", key+"="+value)
 			}
 			plan.Workload = []string{sandboxCheckerPath, "-test.run=^TestPodmanProbe$", "-test.v"}
 			// The test-only IPv6 mapping reaches host loopback through a ULA. This

@@ -10,7 +10,7 @@ import (
 )
 
 func TestPodmanPlan(t *testing.T) {
-	config := Config{Project: "/host/project, with spaces", Home: t.TempDir(), WorkingDirectory: "/host/project, with spaces/sub", Tools: Tools{NPM: "/tools/npm"}, Environment: map[string]string{"HOME": "/host/home", "PATH": "/usr/bin"}}
+	config := Config{Project: "/host/project, with spaces", Home: t.TempDir(), WorkingDirectory: "/host/project, with spaces/sub", Tools: Tools{NPM: "/tools/npm"}}
 	if err := os.Mkdir(filepath.Join(config.Home, ".qwen"), 0o700); err != nil {
 		t.Fatal(err)
 	}

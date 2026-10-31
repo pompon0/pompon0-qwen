@@ -26,11 +26,11 @@ type SandboxPlan struct {
 // workload. The launcher owns its /tmp run directory and removes it after
 // supervision ends; shared Qwen state and caches survive the run.
 func runSandbox(ctx context.Context, invocation Args) error {
-	config, err := discoverConfig()
+	config, err := discoverConfig(invocation.Config)
 	if err != nil {
 		return err
 	}
-	modelEndpoint, err := configuredModelEndpoint(ctx, config.Home, config.Environment, invocation)
+	modelEndpoint, err := config.modelEndpoint(ctx)
 	if err != nil {
 		return err
 	}
@@ -109,8 +109,9 @@ func buildSandbox(config Config, invocation Args, runDir string) (SandboxPlan, e
 			return SandboxPlan{}, fmt.Errorf("Stat(%s): %w", path, err)
 		}
 	}
-	for _, key := range slices.Sorted(maps.Keys(config.Environment)) {
-		args = append(args, "--env", key+"="+config.Environment[key])
+	environment := config.Environment()
+	for _, key := range slices.Sorted(maps.Keys(environment)) {
+		args = append(args, "--env", key+"="+environment[key])
 	}
 	var workload []string
 	switch invocation.Mode {
