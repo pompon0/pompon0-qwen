@@ -136,6 +136,7 @@ host home path.
   shared across all launcher executions and repositories.
 - `/usr` and selected host name-service/certificate paths → the same paths:
   read-only host programs, libraries, and system configuration.
+- Launcher executable → `/opt/qwen-box`: read-only firewall setup and isolation checks.
 - `/tmp/qwen-box-run-*/rootfs/` → `/`: a read-only skeleton for one launch.
 - Fresh Podman tmpfs mounts → `/tmp` and `/run`: writable temporary storage,
   discarded with the container.
@@ -190,9 +191,8 @@ Public IPv4 and IPv6 egress is allowed. A fixed blacklist blocks private and
 special-use address ranges in both families, including loopback, link-local,
 CGNAT, multicast, and reserved/documentation ranges. Host interfaces and routes
 are not inspected: public addresses remain allowed even when assigned to the
-host or used on a directly connected network. nftables interval sets use
-`auto-merge` to handle overlapping and adjacent ranges; the launcher does not
-sort or collapse blacklist prefixes. DNS
+host or used on a directly connected network. Each blacklist prefix has its own
+nftables rule; overlapping prefixes are valid without sorting or merging. DNS
 uses `1.1.1.1` and `2606:4700:4700::1111`. Public IPv6 connectivity depends on
 the host's IPv6 routes; the launcher does not disable either address family.
 
@@ -273,7 +273,10 @@ are separate from the launcher's `/tmp/qwen-box-run-*` directory and
 disappear when the container is removed.
 
 Initially only a trusted `sleep` process runs. A trusted `podman exec --privileged`
-invocation loads nftables rules inside the container's network namespace, then
+invocation runs the read-only launcher at `/opt/qwen-box` to install nftables rules
+through the Go Netlink API inside the container's network namespace. No `nft`
+executable or userspace nftables library is required. The supervisor sends the
+policy as JSON on stdin; setup does not load Qwen or project configuration. Then
 Qwen is started by an ordinary `podman exec` with no capabilities. This setup
 privilege belongs to the rootless namespace and never requires host root. Failure
 to install the policy aborts startup. The policy permits public IPv4/IPv6 and exact

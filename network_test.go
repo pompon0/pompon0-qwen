@@ -8,7 +8,6 @@ import (
 	"net"
 	"net/netip"
 	"slices"
-	"strings"
 	"testing"
 	"time"
 
@@ -27,11 +26,6 @@ func TestPolicyUsesFixedNonPublicRanges(t *testing.T) {
 			t.Fatalf("public internet blocked: %s", address)
 		}
 	}
-	rules := policy.NFTables()
-	if strings.Index(rules, "ip daddr 192.168.1.50 tcp dport 11434 accept") < 0 || strings.Index(rules, "ip daddr 192.168.1.50 tcp dport 11434 accept") > strings.Index(rules, "ip daddr @blocked4") {
-		t.Fatal("explicit localnet exception must precede destination blocks")
-	}
-
 }
 
 func policyBlocks(policy NetworkPolicy, address netip.Addr) bool {
@@ -41,28 +35,6 @@ func policyBlocks(policy NetworkPolicy, address netip.Addr) bool {
 		}
 	}
 	return false
-}
-
-func TestIPv6LocalnetException(t *testing.T) {
-	rules := newNetworkPolicy([]netip.AddrPort{netip.MustParseAddrPort("[fd12:3456::50]:11434")}).NFTables()
-	exception := strings.Index(rules, "ip6 daddr fd12:3456::50 tcp dport 11434 accept")
-	if exception < 0 || exception > strings.Index(rules, "ip6 daddr @blocked6") {
-		t.Fatal("explicit IPv6 localnet exception must precede destination blocks")
-	}
-}
-
-func TestLocalnetExceptionsAreExplicit(t *testing.T) {
-	if rules := newNetworkPolicy(nil).NFTables(); strings.Contains(rules, "tcp dport") || strings.Contains(rules, "udp dport") {
-		t.Fatal("default policy must not grant local TCP/UDP exceptions")
-	}
-	allowed := []netip.AddrPort{netip.MustParseAddrPort("192.168.1.50:11434"), netip.MustParseAddrPort("[fd12::50]:8000")}
-	rules := newNetworkPolicy(allowed).NFTables()
-	for _, rule := range []string{"ip daddr 192.168.1.50 tcp dport 11434 accept", "ip daddr 192.168.1.50 udp dport 11434 accept", "ip6 daddr fd12::50 tcp dport 8000 accept", "ip6 daddr fd12::50 udp dport 8000 accept"} {
-		index := strings.Index(rules, rule)
-		if index < 0 || index > strings.Index(rules, "ip daddr @blocked4") {
-			t.Fatalf("missing localnet exception before blocks: %s", rule)
-		}
-	}
 }
 
 func TestLocalnetDNSResolution(t *testing.T) {
@@ -135,10 +107,9 @@ func TestLocalnetDNSResolution(t *testing.T) {
 		if len(resolved) != 6 {
 			return fmt.Errorf("unexpected resolved endpoints: %+v", resolved)
 		}
-		rules := newNetworkPolicy(resolved).NFTables()
 		for _, address := range wantAddresses {
 			for _, port := range []uint16{8000, 9000} {
-				if !slices.Contains(resolved, netip.AddrPortFrom(address, port)) || !strings.Contains(rules, fmt.Sprintf("daddr %s tcp dport %d accept", address, port)) || !strings.Contains(rules, fmt.Sprintf("daddr %s udp dport %d accept", address, port)) {
+				if !slices.Contains(resolved, netip.AddrPortFrom(address, port)) {
 					return fmt.Errorf("missing resolved destination %s:%d", address, port)
 				}
 			}

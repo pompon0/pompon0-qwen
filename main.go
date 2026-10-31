@@ -54,6 +54,8 @@ func main() {
 			return runSandbox(ctx, args)
 		case ModeIsolationProbe:
 			return runIsolationChecks(ctx, args.Version, args.Arguments[0], os.Stdout)
+		case ModeFirewallSetup:
+			return installFirewall(os.Stdin)
 		case ModeHelp:
 			return printHelp(os.Stdout, args.Arguments)
 		default:
@@ -78,6 +80,7 @@ const (
 	// The probe runs inside the sandbox and bypasses host configuration discovery.
 	// It must never load project code, Qwen configuration, or hooks.
 	ModeIsolationProbe Mode = "internal-isolation-probe"
+	ModeFirewallSetup  Mode = "internal-firewall-setup"
 )
 
 type Args struct {
@@ -112,7 +115,7 @@ func parseArgs(arguments []string) (Args, error) {
 	}
 
 	switch result.Mode {
-	case ModeQwen, ModeIsolationCheck, ModeIsolationProbe, ModeHelp:
+	case ModeQwen, ModeIsolationCheck, ModeIsolationProbe, ModeFirewallSetup, ModeHelp:
 	default:
 		return Args{}, fmt.Errorf("unknown launcher command %q", result.Mode)
 	}
@@ -136,6 +139,10 @@ func parseArgs(arguments []string) (Args, error) {
 	case ModeIsolationCheck:
 		if len(positionals) != 0 {
 			return Args{}, fmt.Errorf("isolation-check accepts no positional arguments")
+		}
+	case ModeFirewallSetup:
+		if len(positionals) != 0 {
+			return Args{}, fmt.Errorf("%s accepts no positional arguments", result.Mode)
 		}
 	case ModeIsolationProbe:
 		if len(positionals) != 1 {
@@ -179,7 +186,7 @@ Use qwen-box help [command] for launcher command help.
 Arguments after -- are forwarded to Qwen Code unchanged, including -h/--help.
 Only --localnet grants local network exceptions; Qwen settings and arguments do not.
 
-Requires Podman, nftables, Node.js, and npm.
+Requires Podman, Node.js, and npm.
 npm installs and caches the selected Qwen version at runtime inside the sandbox.
 Launcher runs share writable Qwen state and caches, separately from manual runs.
 Selected host ~/.qwen configuration entries are mounted read-only.

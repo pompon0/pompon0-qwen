@@ -1,9 +1,17 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
+	"net"
 	"net/netip"
-	"strings"
+
+	"github.com/google/nftables"
+	"github.com/google/nftables/binaryutil"
+	"github.com/google/nftables/expr"
+	"golang.org/x/net/ipv6"
+	"golang.org/x/sys/unix"
 )
 
 // NetworkPolicy describes the destinations permitted by the supervisor.
@@ -66,53 +74,142 @@ func newNetworkPolicy(localnet []netip.AddrPort) NetworkPolicy {
 
 // Rules are installed only inside the managed Podman container, before Qwen.
 // No host firewall is modified. Explicit localnet exceptions precede destination blocks.
-func (policy NetworkPolicy) NFTables() string {
-	var blocked4, blocked6 []string
-	for _, prefix := range policy.Blocked {
-		if prefix.Addr().Is4() {
-			blocked4 = append(blocked4, prefix.String())
-		} else {
-			blocked6 = append(blocked6, prefix.String())
+func (policy NetworkPolicy) Install() error {
+	connection, err := nftables.New()
+	if err != nil {
+		return fmt.Errorf("nftables.New(): %w", err)
+	}
+	table := connection.AddTable(&nftables.Table{Name: "qwen_egress", Family: nftables.TableFamilyINet})
+	for _, chain := range []struct {
+		name  string
+		hook  nftables.ChainHook
+		rules [][]expr.Any
+	}{
+		{"output", *nftables.ChainHookOutput, policy.outputRules()},
+		{"input", *nftables.ChainHookInput, inputRules()},
+		{"forward", *nftables.ChainHookForward, nil},
+	} {
+		drop := nftables.ChainPolicyDrop
+		installed := connection.AddChain(&nftables.Chain{
+			Name: chain.name, Table: table, Type: nftables.ChainTypeFilter,
+			Hooknum: &chain.hook, Priority: nftables.ChainPriorityFilter, Policy: &drop,
+		})
+		for _, expressions := range chain.rules {
+			connection.AddRule(&nftables.Rule{Table: table, Chain: installed, Exprs: expressions})
 		}
 	}
-	elements := func(blocked []string) string {
-		if len(blocked) == 0 {
-			return ""
-		}
-		return "elements = { " + strings.Join(blocked, ", ") + " }"
+	// Commit the complete policy atomically. The short-lived connection opened
+	// by Flush is closed by the library before it returns.
+	if err := connection.Flush(); err != nil {
+		return fmt.Errorf("nftables.Flush(): %w", err)
 	}
-	var exceptions []string
-	for _, endpoint := range policy.Localnet {
-		family := "ip"
-		if endpoint.Addr().Is6() {
-			family = "ip6"
-		}
-		for _, protocol := range []string{"tcp", "udp"} {
-			exceptions = append(exceptions, fmt.Sprintf("%s daddr %s %s dport %d accept", family, endpoint.Addr(), protocol, endpoint.Port()))
-		}
-	}
-	return fmt.Sprintf(`table inet qwen_egress {
- set blocked4 { type ipv4_addr; flags interval; auto-merge; %s }
- set blocked6 { type ipv6_addr; flags interval; auto-merge; %s }
- chain output {
-  type filter hook output priority 0; policy drop;
-  oifname "lo" accept
-  %s
-  # IPv6 needs neighbor discovery, router discovery, and path-MTU errors.
-  # These control messages do not grant TCP/UDP access to blocked destinations.
-  ip6 hoplimit 255 icmpv6 type { nd-router-solicit, nd-neighbor-solicit, nd-neighbor-advert } accept
-  ip daddr @blocked4 reject with icmpx type admin-prohibited
-  ip6 daddr @blocked6 reject with icmpx type admin-prohibited
-  meta nfproto { ipv4, ipv6 } accept
- }
- chain input {
-  type filter hook input priority 0; policy drop;
-  iifname "lo" accept
-  ct state established,related accept
-  icmpv6 type { destination-unreachable, packet-too-big, time-exceeded, parameter-problem } accept
-  ip6 hoplimit 255 icmpv6 type { nd-router-advert, nd-neighbor-solicit, nd-neighbor-advert } accept
- }
- chain forward { type filter hook forward priority 0; policy drop; }
+	return nil
 }
-`, elements(blocked4), elements(blocked6), strings.Join(exceptions, "\n  "))
+
+// installFirewall runs as the trusted setup process in the container namespace.
+// It reads only the supervisor's policy, without discovering host configuration.
+func installFirewall(input io.Reader) error {
+	var policy NetworkPolicy
+	decoder := json.NewDecoder(input)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&policy); err != nil {
+		return fmt.Errorf("decode firewall policy: %w", err)
+	}
+	for _, prefix := range policy.Blocked {
+		if !prefix.IsValid() || prefix.Addr().Zone() != "" {
+			return fmt.Errorf("invalid blocked prefix %s", prefix)
+		}
+	}
+	for _, endpoint := range policy.Localnet {
+		if !endpoint.IsValid() || endpoint.Port() == 0 || endpoint.Addr().Zone() != "" {
+			return fmt.Errorf("invalid localnet endpoint %s", endpoint)
+		}
+	}
+	return policy.Install()
+}
+
+func (policy NetworkPolicy) outputRules() [][]expr.Any {
+	rules := [][]expr.Any{accept(metaEquals(expr.MetaKeyOIFNAME, []byte("lo\x00"))...)}
+	for _, endpoint := range policy.Localnet {
+		for _, protocol := range []byte{unix.IPPROTO_TCP, unix.IPPROTO_UDP} {
+			expressions := destinationMatches(netip.PrefixFrom(endpoint.Addr(), endpoint.Addr().BitLen()))
+			expressions = append(expressions, metaEquals(expr.MetaKeyL4PROTO, []byte{protocol})...)
+			expressions = append(expressions, payloadEquals(expr.PayloadBaseTransportHeader, 2, binaryutil.BigEndian.PutUint16(endpoint.Port()))...)
+			rules = append(rules, accept(expressions...))
+		}
+	}
+	// IPv6 needs neighbor discovery, router discovery, and path-MTU errors.
+	// These control messages do not grant TCP/UDP access to blocked destinations.
+	for _, kind := range []ipv6.ICMPType{ipv6.ICMPTypeRouterSolicitation, ipv6.ICMPTypeNeighborSolicitation, ipv6.ICMPTypeNeighborAdvertisement} {
+		rules = append(rules, icmpv6Rule(kind, true))
+	}
+	// Separate prefix rules accept overlaps without userspace interval merging.
+	for _, prefix := range policy.Blocked {
+		rules = append(rules, append(destinationMatches(prefix), &expr.Reject{Type: unix.NFT_REJECT_ICMPX_UNREACH, Code: unix.NFT_REJECT_ICMPX_ADMIN_PROHIBITED}))
+	}
+	for _, family := range []byte{unix.NFPROTO_IPV4, unix.NFPROTO_IPV6} {
+		rules = append(rules, accept(metaEquals(expr.MetaKeyNFPROTO, []byte{family})...))
+	}
+	return rules
+}
+
+func inputRules() [][]expr.Any {
+	rules := [][]expr.Any{
+		accept(metaEquals(expr.MetaKeyIIFNAME, []byte("lo\x00"))...),
+		{
+			&expr.Ct{Key: expr.CtKeySTATE, Register: 1},
+			&expr.Bitwise{SourceRegister: 1, DestRegister: 1, Len: 4,
+				Mask: binaryutil.NativeEndian.PutUint32(expr.CtStateBitESTABLISHED | expr.CtStateBitRELATED), Xor: make([]byte, 4)},
+			&expr.Cmp{Op: expr.CmpOpNeq, Register: 1, Data: make([]byte, 4)},
+			&expr.Verdict{Kind: expr.VerdictAccept},
+		},
+	}
+	for _, kind := range []ipv6.ICMPType{ipv6.ICMPTypeDestinationUnreachable, ipv6.ICMPTypePacketTooBig, ipv6.ICMPTypeTimeExceeded, ipv6.ICMPTypeParameterProblem} {
+		rules = append(rules, icmpv6Rule(kind, false))
+	}
+	for _, kind := range []ipv6.ICMPType{ipv6.ICMPTypeRouterAdvertisement, ipv6.ICMPTypeNeighborSolicitation, ipv6.ICMPTypeNeighborAdvertisement} {
+		rules = append(rules, icmpv6Rule(kind, true))
+	}
+	return rules
+}
+
+func accept(expressions ...expr.Any) []expr.Any {
+	return append(expressions, &expr.Verdict{Kind: expr.VerdictAccept})
+}
+
+func metaEquals(key expr.MetaKey, data []byte) []expr.Any {
+	return []expr.Any{&expr.Meta{Key: key, Register: 1}, &expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: data}}
+}
+
+func payloadEquals(base expr.PayloadBase, offset uint32, data []byte) []expr.Any {
+	return []expr.Any{
+		&expr.Payload{DestRegister: 1, Base: base, Offset: offset, Len: uint32(len(data))},
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: data},
+	}
+}
+
+func destinationMatches(prefix netip.Prefix) []expr.Any {
+	address := prefix.Masked().Addr()
+	family, offset := byte(unix.NFPROTO_IPV6), uint32(24)
+	if address.Is4() {
+		family, offset = unix.NFPROTO_IPV4, 16
+	}
+	data := address.AsSlice()
+	expressions := metaEquals(expr.MetaKeyNFPROTO, []byte{family})
+	expressions = append(expressions, &expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: offset, Len: uint32(len(data))})
+	if prefix.Bits() != address.BitLen() {
+		expressions = append(expressions, &expr.Bitwise{SourceRegister: 1, DestRegister: 1, Len: uint32(len(data)),
+			Mask: net.CIDRMask(prefix.Bits(), address.BitLen()), Xor: make([]byte, len(data))})
+	}
+	return append(expressions, &expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: data})
+}
+
+func icmpv6Rule(kind ipv6.ICMPType, requireLinkHopLimit bool) []expr.Any {
+	expressions := metaEquals(expr.MetaKeyNFPROTO, []byte{unix.NFPROTO_IPV6})
+	expressions = append(expressions, metaEquals(expr.MetaKeyL4PROTO, []byte{unix.IPPROTO_ICMPV6})...)
+	if requireLinkHopLimit {
+		expressions = append(expressions, payloadEquals(expr.PayloadBaseNetworkHeader, 7, []byte{255})...)
+	}
+	expressions = append(expressions, payloadEquals(expr.PayloadBaseTransportHeader, 0, []byte{byte(kind)})...)
+	return accept(expressions...)
 }

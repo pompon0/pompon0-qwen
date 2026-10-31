@@ -22,6 +22,16 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+func TestMain(m *testing.M) {
+	// Podman executes the mounted test binary as the trusted firewall helper.
+	// Use the production entry point before Go's test flag parser runs.
+	if len(os.Args) > 1 && os.Args[1] == string(ModeFirewallSetup) {
+		main()
+		return
+	}
+	os.Exit(m.Run())
+}
+
 func TestPodmanIntegration(t *testing.T) {
 	if os.Getenv("POMPON_PODMAN_INTEGRATION") != "1" {
 		t.Skip("set POMPON_PODMAN_INTEGRATION=1 to test a live rootless Podman sandbox")
@@ -58,7 +68,7 @@ func TestPodmanIntegration(t *testing.T) {
 			deniedAddress := netip.AddrPortFrom(test.target, netip.MustParseAddrPort(other.Listener.Addr().String()).Port())
 			directory := t.TempDir()
 			root := filepath.Join(directory, "run")
-			config := Config{Project: filepath.Join(directory, "project"), Home: filepath.Join(directory, "home"), WorkingDirectory: filepath.Join(directory, "project", "nested"), Tools: Tools{Podman: "/usr/bin/podman", NFT: "/usr/bin/nft", Node: "/usr/bin/node", NPM: "/usr/bin/npm"}}
+			config := Config{Project: filepath.Join(directory, "project"), Home: filepath.Join(directory, "home"), WorkingDirectory: filepath.Join(directory, "project", "nested"), Tools: Tools{Podman: "/usr/bin/podman", Node: "/usr/bin/node", NPM: "/usr/bin/npm"}}
 			for _, path := range []string{filepath.Join(config.Project, ".git"), config.WorkingDirectory, filepath.Join(config.Home, ".qwen"), filepath.Join(config.cacheDir(), "npm"), config.stateDir(), root} {
 				if err := os.MkdirAll(path, 0o700); err != nil {
 					t.Fatal(err)
@@ -98,7 +108,7 @@ func TestPodmanIntegration(t *testing.T) {
 			for key, value := range probeEnvironment {
 				plan.RunArguments = slices.Insert(plan.RunArguments, 1, "--env", key+"="+value)
 			}
-			plan.Workload = []string{sandboxCheckerPath, "-test.run=^TestPodmanProbe$", "-test.v"}
+			plan.Workload = []string{sandboxLauncherPath, "-test.run=^TestPodmanProbe$", "-test.v"}
 			// Test-only mappings reach host loopback through private addresses,
 			// exercising non-public blocks without depending on the host's LAN IP.
 			if test.pastaOptions != "" {
@@ -109,7 +119,7 @@ func TestPodmanIntegration(t *testing.T) {
 				}
 			}
 			policy := newNetworkPolicy(config.Localnet)
-			// Exercise nftables auto-merge with overlapping IPv4 and IPv6 ranges.
+			// Overlapping IPv4 and IPv6 ranges must remain valid policy inputs.
 			policy.Blocked = append(slices.Clone(policy.Blocked), netip.MustParsePrefix("10.0.0.0/9"), netip.MustParsePrefix("fd00::/8"))
 			ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 			defer cancel()

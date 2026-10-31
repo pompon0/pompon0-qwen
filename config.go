@@ -36,7 +36,7 @@ func (c Config) cacheDir() string { return filepath.Join(c.Home, ".cache/qwen-bo
 // or other invalid .git marker causes an error. The sandbox working directory
 // uses the same resolved absolute path as the host working directory.
 //
-// It requires executable podman, nft, node, and npm files in /usr/bin, then
+// It requires executable podman, node, and npm files in /usr/bin, then
 // creates shared persistent state at ~/.local/state/qwen-box for all
 // launcher executions, regardless of repository. It resolves the state
 // path's symlinks and rejects state inside the repository. Home is the resolved
@@ -110,11 +110,10 @@ func discoverTools() (Tools, error) {
 	// paths, preserved inside the sandbox by the read-only /usr mount.
 	t := Tools{
 		Podman: "/usr/bin/podman",
-		NFT:    "/usr/bin/nft",
 		Node:   "/usr/bin/node",
 		NPM:    "/usr/bin/npm",
 	}
-	for _, path := range []string{t.Podman, t.NFT, t.Node, t.NPM} {
+	for _, path := range []string{t.Podman, t.Node, t.NPM} {
 		info, err := os.Stat(path)
 		if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
 			return Tools{}, fmt.Errorf("missing executable %s; see help", path)

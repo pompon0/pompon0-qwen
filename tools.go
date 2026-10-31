@@ -17,7 +17,7 @@ import (
 // Tools holds verified executable paths. The read-only /usr mount preserves
 // these paths inside the sandbox for Qwen and the isolation probe.
 type Tools struct {
-	Podman, NFT, Node, NPM string
+	Podman, Node, NPM string
 }
 
 // QwenVersion selects a published npm version or dist-tag, never another package

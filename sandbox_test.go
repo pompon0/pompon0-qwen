@@ -75,6 +75,9 @@ func TestPodmanPlan(t *testing.T) {
 		if !slices.Contains(cacheMount, "src="+filepath.Join(config.Home, ".cache/qwen-box")) || slices.Contains(cacheMount, "ro=true") {
 			t.Fatal("the full cache directory must use the writable launcher cache")
 		}
+		if !slices.Contains(mounts[sandboxLauncherPath], "ro=true") {
+			t.Fatal("trusted launcher must be mounted read-only")
+		}
 		if mode == ModeQwen {
 			if plan.Workload[0] != config.Tools.NPM {
 				t.Fatal("Qwen must use the configured npm executable")
@@ -82,13 +85,7 @@ func TestPodmanPlan(t *testing.T) {
 			if !containsSequence(plan.Workload, []string{"--package=@qwen-code/qwen-code@0.26.1", "--", "qwen", "--model", "local"}) {
 				t.Fatal(plan.Workload)
 			}
-			if _, present := mounts[sandboxCheckerPath]; present {
-				t.Fatal("diagnostic executable leaked into normal sandbox")
-			}
 		} else {
-			if !slices.Contains(mounts[sandboxCheckerPath], "ro=true") {
-				t.Fatal("diagnostic executable must be mounted read-only")
-			}
 			if !containsSequence(plan.Workload, []string{"--qwen-version", "0.26.1"}) {
 				t.Fatal("diagnostics must check the selected Qwen version")
 			}

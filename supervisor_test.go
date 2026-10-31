@@ -2,9 +2,12 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -45,7 +48,7 @@ esac
 	if err := os.WriteFile(executable, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	return Tools{Podman: executable, NFT: "/usr/bin/nft", Node: "/usr/bin/node", NPM: "/usr/bin/npm"}, directory
+	return Tools{Podman: executable, Node: "/usr/bin/node", NPM: "/usr/bin/npm"}, directory
 }
 
 func testPlan(workload ...string) SandboxPlan {
@@ -54,7 +57,8 @@ func testPlan(workload ...string) SandboxPlan {
 
 func TestPodmanSetupBeforeWorkloadAndExitStatus(t *testing.T) {
 	tools, directory := fakePodman(t)
-	err := supervise(t.Context(), tools, testPlan("/bin/bash", "-c", "test -f '"+filepath.Join(directory, "rules")+"'; exit 23"), NetworkPolicy{})
+	policy := newNetworkPolicy([]netip.AddrPort{netip.MustParseAddrPort("192.168.1.50:11434"), netip.MustParseAddrPort("[fd12::50]:8000")})
+	err := supervise(t.Context(), tools, testPlan("/bin/bash", "-c", "test -f '"+filepath.Join(directory, "rules")+"'; exit 23"), policy)
 	if code, ok := errors.AsType[codeError](err); !ok || code.exitCode() != 23 {
 		t.Fatalf("expected workload status 23, got %v", err)
 	}
@@ -65,8 +69,19 @@ func TestPodmanSetupBeforeWorkloadAndExitStatus(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(calls), "exec --privileged --user=0:0 --interactive test-sandbox /usr/bin/nft --file -") {
+	if !strings.Contains(string(calls), "exec --privileged --user=0:0 --interactive test-sandbox "+sandboxLauncherPath+" "+string(ModeFirewallSetup)) {
 		t.Fatalf("missing trusted firewall setup: %s", calls)
+	}
+	data, err := os.ReadFile(filepath.Join(directory, "rules"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var received NetworkPolicy
+	if err := json.Unmarshal(data, &received); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(received.Blocked, policy.Blocked) || !slices.Equal(received.Localnet, policy.Localnet) {
+		t.Fatalf("setup received a different policy: %+v", received)
 	}
 }
 

@@ -105,18 +105,18 @@ func buildSandbox(config Config, invocation Args, runDir string) (SandboxPlan, e
 	for _, key := range slices.Sorted(maps.Keys(environment)) {
 		args = append(args, "--env", key+"="+environment[key])
 	}
+	// The trusted launcher installs the firewall before executing the workload.
+	launcher, err := os.Executable()
+	if err != nil {
+		return SandboxPlan{}, fmt.Errorf("Executable(): %w", err)
+	}
+	args = append(args, "--mount", bindMount(launcher, sandboxLauncherPath, false))
 	var workload []string
 	switch invocation.Mode {
 	case ModeQwen:
 		workload = config.Tools.qwenCommand(invocation.Version, invocation.Arguments)
 	case ModeIsolationCheck:
-		// The diagnostic binary is exposed only for the explicit isolation check.
-		launcher, err := os.Executable()
-		if err != nil {
-			return SandboxPlan{}, fmt.Errorf("Executable(): %w", err)
-		}
-		args = append(args, "--mount", bindMount(launcher, sandboxCheckerPath, false))
-		workload = []string{sandboxCheckerPath, string(ModeIsolationProbe), "--qwen-version", invocation.Version.String(), filepath.Join(runDir, "host-canary")}
+		workload = []string{sandboxLauncherPath, string(ModeIsolationProbe), "--qwen-version", invocation.Version.String(), filepath.Join(runDir, "host-canary")}
 	default:
 		return SandboxPlan{}, fmt.Errorf("unknown sandbox mode %q", invocation.Mode)
 	}

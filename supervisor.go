@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -17,6 +19,10 @@ const shutdownTimeout = 3 * time.Second
 // Podman owns namespaces, networking, mount setup, and container processes. The
 // launcher only orders its commands: trusted idle container, firewall, then Qwen.
 func supervise(ctx context.Context, tools Tools, plan SandboxPlan, policy NetworkPolicy) (err error) {
+	var setup bytes.Buffer
+	if err := json.NewEncoder(&setup).Encode(policy); err != nil {
+		return fmt.Errorf("encode firewall policy: %w", err)
+	}
 	rootless, err := tools.RunPodman(ctx, strings.NewReader(""), "info", "--format", "{{.Host.Security.Rootless}}")
 	if err != nil {
 		return err
@@ -37,7 +43,7 @@ func supervise(ctx context.Context, tools Tools, plan SandboxPlan, policy Networ
 	}
 	// Only this trusted host executable receives setup privileges, before any
 	// Qwen/project code runs. Normal exec inherits the container's dropped caps.
-	if _, err := tools.RunPodman(ctx, strings.NewReader(policy.NFTables()), "exec", "--privileged", "--user=0:0", "--interactive", string(plan.Name), tools.NFT, "--file", "-"); err != nil {
+	if _, err := tools.RunPodman(ctx, &setup, "exec", "--privileged", "--user=0:0", "--interactive", string(plan.Name), sandboxLauncherPath, string(ModeFirewallSetup)); err != nil {
 		return fmt.Errorf("install sandbox firewall: %w", err)
 	}
 	args := append([]string{"--remote=false", "exec"}, interactiveArguments()...)

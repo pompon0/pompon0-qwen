@@ -185,3 +185,18 @@ func TestIsolationProbeParsesFlags(t *testing.T) {
 		t.Fatalf("probe dispatch: %+v, %v", args, err)
 	}
 }
+
+func TestFirewallSetupParsing(t *testing.T) {
+	args, err := parseArgs([]string{string(ModeFirewallSetup)})
+	if err != nil || args.Mode != ModeFirewallSetup {
+		t.Fatalf("firewall setup dispatch: %+v, %v", args, err)
+	}
+	for _, arguments := range [][]string{
+		{string(ModeFirewallSetup), "extra"},
+		{string(ModeFirewallSetup), "--", "extra"},
+	} {
+		if _, err := parseArgs(arguments); err == nil {
+			t.Fatalf("accepted invalid setup arguments: %v", arguments)
+		}
+	}
+}

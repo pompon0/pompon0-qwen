@@ -19,7 +19,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-const sandboxCheckerPath = "/opt/qwen-box-check"
+const sandboxLauncherPath = "/opt/qwen-box"
 
 type capabilityKind string
 type capabilityMask uint64
